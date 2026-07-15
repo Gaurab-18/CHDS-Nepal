@@ -1,0 +1,44 @@
+node_modules/
+.next/
+dist/
+*.js
+!*.config.js
+.env
+.env.local
+playwright-report/
+test-results/
+
+# Documentation / planning (not source code)
+*.md
+!README.md
+!backend/jest.config.js
+!frontend/jest.config.ts
+!frontend/tailwind.config.js
+!frontend/postcss.config.js
+!frontend/next.config.js
+!frontend/playwright.config.ts
+
+# Local dev certs
+*.pem
+*.crt
+*.key
+
+# Build artifacts
+*.tsbuildinfo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker
+docker-data/
+
+# Ignore DB backups and reference docs
+backups/
+docs/
