@@ -3,7 +3,7 @@ import { loginAs, apiGet, apiPost, apiDelete, clearCookies } from './helpers';
 
 const PATIENT_EMAIL = 'patient@chds.np';
 const DOCTOR_EMAIL = 'doctor@chds.np';
-const PASSWORD = '@CHDS2024!';
+const PASSWORD = '@CHDS2026!';
 
 describe('Consent', () => {
 
@@ -84,7 +84,8 @@ describe('Consent', () => {
     await loginAs(DOCTOR_EMAIL, PASSWORD);
     const res = await apiGet(`/doctor/patients/${patientId}/records`);
     expect(res.status).toBe(403);
-    const data: any = await res.json();
-    expect(data.error).toContain('consent');
+    let data: any = null;
+    try { data = await res.json(); } catch { /* non-JSON */ }
+    expect(data?.error || '').toContain('consent');
   });
 });

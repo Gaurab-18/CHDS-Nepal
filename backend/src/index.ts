@@ -24,8 +24,13 @@ import hospitalTermsRouter from './routes/hospitalTerms';
 import adminHospitalsRouter from './routes/adminHospitals';
 import { hospitalAuth } from './middleware/hospitalAuth';
 import { ipBlocker } from './middleware/ipBlocker';
+import { authenticate } from './middleware/authorize';
+import { startPendingBundleExpiry } from './hospital/maintenance';
 
 dotenv.config();
+
+// Expire stale pending review bundles (PHI lifecycle management)
+startPendingBundleExpiry();
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -33,11 +38,42 @@ const port = process.env.PORT || 4000;
 app.use(pinoHttp({ logger } as any));
 
 // Setup security headers
-app.use(helmet());
+app.use(helmet({
+  hsts: { maxAge: 63072000, includeSubDomains: true, preload: true },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  referrerPolicy: { policy: 'no-referrer' },
+  crossOriginEmbedderPolicy: false,
+}));
 
-// Setup CORS
+// Explicit security headers: clickjacking, MIME sniffing, permissions
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=(), payment=()');
+  next();
+});
+
+// Setup CORS (explicit allowlist, never wildcard, never reflect)
+const allowedOrigins = (process.env.CORS_ORIGINS || 'https://localhost')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
 app.use(cors({
-  origin: true, // Allow client origin
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // non-browser / curl
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(null, false);
+  },
   credentials: true
 }));
 
@@ -47,8 +83,10 @@ app.use(express.json());
 // Parse cookies for JWT authentication
 app.use(cookieParser());
 
-// Serve uploaded files (certificates, etc.)
-app.use('/api/v1/uploads', express.static(UPLOAD_DIR));
+// Serve uploaded files (certificates, etc.) : AUTH-GATED so uploaded PHI and
+// certificates are not publicly fetchable by UUID. Any logged-in user may view
+// (patients need doctor certificates during consent); anonymous requests 401.
+app.use('/api/v1/uploads', authenticate, express.static(UPLOAD_DIR));
 
 // Apply IP blocker (brute force protection) : runs before rate limiter
 app.use(ipBlocker);
@@ -301,6 +339,16 @@ app.use((err: any, _req: Request, res: Response, _next: any) => {
   }
   if (err.code === 'LIMIT_FILE_COUNT') {
     res.status(400).json({ error: 'Only one file can be uploaded at a time.' });
+    return;
+  }
+  // Malformed JSON body → 400, not a 500 crash
+  if (err.type === 'entity.parse.failed' || err instanceof SyntaxError && 'body' in err) {
+    res.status(400).json({ error: 'Invalid JSON in request body' });
+    return;
+  }
+  // Request body exceeds the JSON limit → 413, not a 500 crash
+  if (err.type === 'entity.too.large') {
+    res.status(413).json({ error: 'Request body too large' });
     return;
   }
   logger.error({ err }, 'Unhandled error');

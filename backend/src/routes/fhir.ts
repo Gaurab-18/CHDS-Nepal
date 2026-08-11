@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { query } from '../db';
 import { authenticate, authorize } from '../middleware/authorize';
 import { auditLog } from '../middleware/auditLogger';
-import { encryptField } from '../crypto';
+import { encryptPatientField, encryptForPatient, generatePatientSalt, derivePatientKey } from '../crypto';
 import logger from '../logger';
 
 const router = Router();
@@ -87,24 +87,26 @@ router.post('/Patient', authenticate, authorize('doctor', 'admin'),
         return;
       }
 
-      // Encrypt PHI fields
-      const encFirstName = await encryptField(firstName);
-      const encLastName = await encryptField(lastName);
-      const encDob = dob ? await encryptField(dob) : await encryptField('1900-01-01');
-      const encPhone = phone ? await encryptField(phone) : null;
-      const encAddress = address ? await encryptField(address) : null;
+      // Encrypt PHI fields with a fresh per-patient derived key
+      const salt = generatePatientSalt();
+      const patientKey = derivePatientKey(salt).toString('base64');
+      const encFirstName = await encryptPatientField(firstName, patientKey);
+      const encLastName = await encryptPatientField(lastName, patientKey);
+      const encDob = await encryptPatientField(dob || '1900-01-01', patientKey);
+      const encPhone = phone ? await encryptPatientField(phone, patientKey) : null;
+      const encAddress = address ? await encryptPatientField(address, patientKey) : null;
 
       const patientResult = await query(
-        `INSERT INTO patients (user_id, encrypted_first_name, encrypted_last_name, encrypted_dob, encrypted_phone, encrypted_address)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO patients (user_id, enc_key_salt, encrypted_first_name, encrypted_last_name, encrypted_dob, encrypted_phone, encrypted_address)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
-        [userId, encFirstName, encLastName, encDob, encPhone, encAddress]
+        [userId, salt, encFirstName, encLastName, encDob, encPhone, encAddress]
       );
       const newPatientId = patientResult.rows[0].id;
 
       // Create a record entry with source = fhir_push
-      const encTitle = await encryptField(`FHIR Patient: ${firstName} ${lastName}`);
-      const encDesc = await encryptField(`Patient pushed from FHIR system. DOB: ${dob || 'N/A'}, Phone: ${phone || 'N/A'}`);
+      const encTitle = await encryptPatientField(`FHIR Patient: ${firstName} ${lastName}`, patientKey);
+      const encDesc = await encryptPatientField(`Patient pushed from FHIR system. DOB: ${dob || 'N/A'}, Phone: ${phone || 'N/A'}`, patientKey);
 
       await query(
         `INSERT INTO records (patient_id, doctor_id, source, encrypted_title, encrypted_description)
@@ -157,8 +159,8 @@ async function createFhirRecord(
   description: string,
   category: string,
 ): Promise<string> {
-  const encTitle = await encryptField(title);
-  const encDesc = await encryptField(description);
+  const encTitle = await encryptForPatient(patientId, title);
+  const encDesc = await encryptForPatient(patientId, description);
   const result = await query(
     `INSERT INTO records (patient_id, doctor_id, source, category, encrypted_title, encrypted_description)
      VALUES ($1, $2, 'fhir_push', $3, $4, $5) RETURNING id`,

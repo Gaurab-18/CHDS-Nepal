@@ -134,16 +134,16 @@ async function run() {
       results.push({ name: 'Patient Records', passed: false, detail: err.message });
     }
 
-    // Test 6: RBAC - Patient trying Clinician route
+    // Test 6: RBAC - Patient trying Doctor route
     try {
-      const clinicianRoute = await request('GET', '/api/v1/clinician/patients', undefined, authCookie);
+      const clinicianRoute = await request('GET', '/api/v1/doctor/patients', undefined, authCookie);
       results.push({
-        name: 'RBAC: Patient cannot access clinician routes',
+        name: 'RBAC: Patient cannot access doctor routes',
         passed: clinicianRoute.status === 403,
         detail: `status=${clinicianRoute.status}, message=${clinicianRoute.data.error || 'ok'}`
       });
     } catch (err: any) {
-      results.push({ name: 'RBAC: Clinician route', passed: false, detail: err.message });
+      results.push({ name: 'RBAC: Doctor route', passed: false, detail: err.message });
     }
 
     // Test 7: RBAC - Patient trying Admin route
@@ -176,8 +176,8 @@ async function run() {
     // Test 9: Consent creation
     try {
       const clinicianLogin = await request('POST', '/api/v1/auth/login', {
-        email: 'dr.smith@chds.np',
-        password: 'Clin12345!'
+        email: 'doctor@chds.np',
+        password: '@CHDS2026!'
       });
 
       const clinicianId = clinicianLogin.data.user?.id || '3169d162-c01e-4fdd-a41c-ca43b8888030';

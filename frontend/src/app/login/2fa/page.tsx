@@ -53,6 +53,16 @@ function TwoFAForm() {
     <div className="min-h-screen flex items-center justify-center bg-gray-950 px-4 relative overflow-hidden">
       <AmbulanceCursor />
       <div className="w-full max-w-sm">
+        <div className="flex justify-center mb-4">
+          <div style={{ width: 220, height: 220 }}>
+            <dotlottie-wc
+              src="https://lottie.host/ba617da7-2d05-49f6-ab4e-ee75fe85c55e/hn42sVRWJX.lottie"
+              autoplay
+              loop
+              style={{ width: '220px', height: '220px' }}
+            />
+          </div>
+        </div>
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-white">Two-Factor Auth</h1>
           <p className="text-gray-400 mt-2">Enter the 6-digit code</p>

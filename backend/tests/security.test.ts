@@ -3,7 +3,7 @@ import { loginAs, apiGet, apiPost, clearCookies, apiUrl } from './helpers';
 
 const PATIENT_EMAIL = 'patient@chds.np';
 const DOCTOR_EMAIL = 'doctor@chds.np';
-const PASSWORD = '@CHDS2024!';
+const PASSWORD = '@CHDS2026!';
 
 describe('Security', () => {
 
@@ -37,7 +37,7 @@ describe('Security', () => {
     expect(data.expiresIn).toBe('24h');
   });
 
-  test('public verify route returns data without auth', async () => {
+  test('public verify route returns receipt without auth', async () => {
     await loginAs(PATIENT_EMAIL, PASSWORD);
     const qrRes = await apiGet('/patient/audit-qr');
     const qrData: any = await qrRes.json();
@@ -47,9 +47,9 @@ describe('Security', () => {
 
     const publicRes = await fetch(`${apiUrl('/public/audit-log')}?token=${token}`);
     expect(publicRes.status).toBe(200);
-    const publicData: any = await publicRes.json();
-    expect(publicData).toHaveProperty('entries');
-    expect(Array.isArray(publicData.entries)).toBe(true);
+    expect(publicRes.headers.get('content-type')).toContain('text/html');
+    const html = await publicRes.text();
+    expect(html).toContain('CHDS Audit Receipt');
   });
 
   test('expired QR token → 401', async () => {

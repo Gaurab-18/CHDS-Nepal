@@ -1,11 +1,11 @@
 -- CI test users: matches credentials in backend/tests/*.test.ts
--- Password for all: @CHDS2024!
+-- Password for all: @CHDS2026!
 
 INSERT INTO users (id, username, email, password_hash, role, two_factor_enabled, active, onboarding_complete, token_version, is_verified)
 VALUES
-  (gen_random_uuid(), 'patient', 'patient@chds.np', crypt('@CHDS2024!', gen_salt('bf', 12)), 'patient',  false, true, true, 0, false),
-  (gen_random_uuid(), 'doctor',  'doctor@chds.np',  crypt('@CHDS2024!', gen_salt('bf', 12)), 'doctor',   false, true, true, 0, true),
-  (gen_random_uuid(), 'admin',   'admin@chds.np',   crypt('@CHDS2024!', gen_salt('bf', 12)), 'admin',    false, true, true, 0, false)
+  (gen_random_uuid(), 'patient', 'patient@chds.np', crypt('@CHDS2026!', gen_salt('bf', 12)), 'patient',  false, true, true, 0, false),
+  (gen_random_uuid(), 'doctor',  'doctor@chds.np',  crypt('@CHDS2026!', gen_salt('bf', 12)), 'doctor',   false, true, true, 0, true),
+  (gen_random_uuid(), 'admin',   'admin@chds.np',   crypt('@CHDS2026!', gen_salt('bf', 12)), 'admin',    false, true, true, 0, false)
 ON CONFLICT (email) DO NOTHING;
 
 -- Patient profile for patient@chds.np

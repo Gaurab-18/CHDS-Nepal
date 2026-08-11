@@ -38,7 +38,7 @@ ALTER TABLE consents ADD CONSTRAINT consents_status_check CHECK (status IN ('act
 -- Hospital Integration (Phase 0)
 -- ==========================================================
 
--- 0-A: ALTER hospitals — add matching & auth columns
+-- 0-A: ALTER hospitals : add matching & auth columns
 ALTER TABLE hospitals
   ADD COLUMN IF NOT EXISTS software_type   TEXT,
   ADD COLUMN IF NOT EXISTS api_key_hash    TEXT UNIQUE,
@@ -46,7 +46,7 @@ ALTER TABLE hospitals
                                            CHECK (status IN ('pending','active','suspended')),
   ADD COLUMN IF NOT EXISTS contact_email   TEXT;
 
--- 0-B: ALTER patients — add plaintext matching columns
+-- 0-B: ALTER patients : add plaintext matching columns
 -- encrypted_national_id BYTEA stays as-is (used only for decrypted display)
 -- nid_hash enables fast equality matching without decrypting every row
 -- full_name / date_of_birth / gender are plaintext copies for scoring
@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_patients_nid_hash ON patients(nid_hash);
 CREATE INDEX IF NOT EXISTS idx_patients_dob     ON patients(date_of_birth);
 CREATE INDEX IF NOT EXISTS idx_patients_name    ON patients(full_name);
 
--- 0-C: ALTER records — add 'hospital_push' to source constraint
+-- 0-C: ALTER records : add 'hospital_push' to source constraint
 ALTER TABLE records DROP CONSTRAINT IF EXISTS records_source_check;
 ALTER TABLE records
   ADD CONSTRAINT records_source_check
@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_hpl_patient  ON hospital_patient_links(chds_patie
 CREATE INDEX IF NOT EXISTS idx_hpl_hospital ON hospital_patient_links(hospital_id);
 CREATE INDEX IF NOT EXISTS idx_hpl_status   ON hospital_patient_links(status);
 
--- 0-E: CREATE hospital_consents (additive — does not replace existing consents)
+-- 0-E: CREATE hospital_consents (additive : does not replace existing consents)
 CREATE TABLE IF NOT EXISTS hospital_consents (
   id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   patient_id       UUID        NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -108,10 +108,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON hospital_patient_links TO app_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON hospital_consents     TO app_user;
 
 -- ==========================================================
--- Hospital Integration (Phase 2 — HIPAA & Terms)
+-- Hospital Integration (Phase 2 : HIPAA & Terms)
 -- ==========================================================
 
--- 2-A: ALTER hospitals — add terms acceptance columns
+-- 2-A: ALTER hospitals : add terms acceptance columns
 ALTER TABLE hospitals
   ADD COLUMN IF NOT EXISTS terms_accepted_at  TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS terms_version      TEXT;
@@ -175,3 +175,56 @@ CREATE INDEX IF NOT EXISTS idx_ip_blocks_ip      ON ip_blocks(ip_address);
 CREATE INDEX IF NOT EXISTS idx_ip_blocks_status  ON ip_blocks(status);
 
 GRANT SELECT, INSERT, UPDATE ON ip_blocks TO app_user;
+
+-- ==========================================================
+-- Refresh Token Rotation (single-use refresh tokens)
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT        NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    revoked_at  TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON refresh_tokens TO app_user;
+
+-- ==========================================================
+-- Hospital API Key Rotation (grace period for old key)
+-- ==========================================================
+ALTER TABLE hospitals
+  ADD COLUMN IF NOT EXISTS api_key_previous_hash TEXT,
+  ADD COLUMN IF NOT EXISTS api_key_previous_expires_at TIMESTAMPTZ;
+
+-- ==========================================================
+-- Pending Bundle Expiry (auto-discard unreviewed PHI)
+-- ==========================================================
+ALTER TABLE hospital_patient_links
+  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+
+-- ==========================================================
+-- Per-patient encryption keys (bounded blast radius)
+-- Random salt per patient → HKDF-derived key for that patient's PHI.
+-- Legacy rows (no enc_key_salt) continue to decrypt with the master key.
+-- ==========================================================
+ALTER TABLE patients
+  ADD COLUMN IF NOT EXISTS enc_key_salt BYTEA;
+
+CREATE INDEX IF NOT EXISTS idx_patients_enc_salt ON patients(enc_key_salt);
+
+-- ==========================================================
+-- Hospital Matching v2 : pending review holds + evidence
+-- ==========================================================
+
+-- 0-F: store the held clinical bundle on a pending link so QA confirm can
+-- import the records; add a human-readable reason for the review decision.
+ALTER TABLE hospital_patient_links
+  ADD COLUMN IF NOT EXISTS pending_bundle JSONB,
+  ADD COLUMN IF NOT EXISTS pending_reason  TEXT,
+  ADD COLUMN IF NOT EXISTS evidence        TEXT,
+  ADD COLUMN IF NOT EXISTS reviewed_by     UUID REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS reviewed_at     TIMESTAMPTZ;

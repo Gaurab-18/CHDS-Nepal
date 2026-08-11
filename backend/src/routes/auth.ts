@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { query } from '../db';
 import crypto from 'crypto';
-import { hashPassword, verifyPassword } from '../auth/password';
+import { hashPassword, verifyPassword, hashBackupCode, verifyBackupCode } from '../auth/password';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -10,7 +10,10 @@ import {
   verifyRefreshToken,
   getRefreshTokenFromCookies,
   generateResetToken,
-  hashToken
+  hashToken,
+  storeRefreshToken,
+  consumeRefreshToken,
+  revokeAllRefreshTokens
 } from '../auth/jwt';
 import { verifyTOTPForUser, setupTOTP, enableTOTP } from '../auth/totp';
 import { insertAuditLog } from '../middleware/auditLogger';
@@ -24,9 +27,37 @@ const router = Router();
 
 const REQUIRES_2FA_RESPONSE = { requires2FA: true, message: '2FA verification required' };
 
+async function issueTokens(
+  res: Response,
+  user: { id: string; email: string; role: string; token_version: number; is_verified: boolean }
+): Promise<void> {
+  const payload: JwtPayload & { token_version: number } = {
+    id: user.id, email: user.email, role: user.role, token_version: user.token_version, is_verified: user.is_verified
+  };
+  const refreshToken = generateRefreshToken(payload);
+  await storeRefreshToken(user.id, refreshToken);
+  setAuthCookies(res, generateAccessToken(payload), refreshToken);
+}
+
 // --- LOGIN ---
 router.post('/login', async (req: Request, res: Response) => {
   try {
+    // A brute-forcing IP that has already been blocked must not keep hammering
+    // the login endpoint (ipBlocker bypasses /auth/ so legit users can log in,
+    // but an active block should throttle the login route too).
+    const clientIP = (req.headers['x-forwarded-for']
+      ? (typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'] : req.headers['x-forwarded-for'][0]).split(',')[0].trim()
+      : req.ip || req.socket.remoteAddress || 'unknown').replace('::ffff:', '');
+    const activeBlock = await query(
+      `SELECT id FROM ip_blocks WHERE ip_address = $1 AND status = 'active'
+         AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) LIMIT 1`,
+      [clientIP]
+    );
+    if (activeBlock.rows.length > 0) {
+      res.status(429).json({ error: 'Too many failed attempts. Your IP is temporarily blocked.' });
+      return;
+    }
+
     const { email, password } = req.body;
     if (!email || !password) {
       res.status(400).json({ error: 'Email and password are required' });
@@ -39,7 +70,32 @@ router.post('/login', async (req: Request, res: Response) => {
     );
 
     if (!result.rows.length) {
+      // Uniform timing: run a dummy bcrypt verification so attackers cannot
+      // distinguish "unknown email" from "wrong password" by response time.
+      const dummyHash = '$2b$12$Hm3ykB/dSywFLp6Iy1NZi.V7JUHv7PZCJy.1apf57WO7md96ia4Te';
+      await verifyPassword(password, dummyHash);
       await insertAuditLog(null, 'LOGIN_FAILED', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+
+      // Unknown emails must still be rate-throttled: an attacker spraying random
+      // addresses gets the SAME rapid-fire IP block as a wrong-password attacker.
+      const clientIP = req.headers['x-forwarded-for']
+        ? (typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'] : req.headers['x-forwarded-for'][0]).split(',')[0].trim()
+        : req.ip || req.socket.remoteAddress || 'unknown';
+      const rapidFireThreshold = parseInt(process.env.RAPID_FIRE_THRESHOLD || '5');
+      const rapidKey = `failed_logins_rapid:${clientIP}`;
+      const rapidCount = await redisClient.incr(rapidKey);
+      if (rapidCount === 1) await redisClient.expire(rapidKey, 60);
+      const isRapidFire = rapidCount >= rapidFireThreshold;
+      const disableBlocking = process.env.DISABLE_RATE_LIMIT === 'true' || process.env.NODE_ENV === 'test';
+      if (isRapidFire && !disableBlocking) {
+        const blockId = await blockIP(clientIP, 'SUSPICIOUS_ACTIVITY', null, null, rapidCount);
+        if (blockId) {
+          logger.warn({ ip: clientIP, blockId, rapidFire: true, unknownEmail: true }, 'IP blocked (unknown-email rapid fire)');
+          await insertAuditLog(null, 'BREACH_DETECTED', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+          await insertAuditLog(null, 'IP_BLOCKED', blockId, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+        }
+      }
+
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
@@ -67,8 +123,9 @@ router.post('/login', async (req: Request, res: Response) => {
 
       const shouldBlock = count >= breachThreshold || isRapidFire;
       const remainingAttempts = Math.max(0, breachThreshold - count);
+      const disableBlocking = process.env.DISABLE_RATE_LIMIT === 'true' || process.env.NODE_ENV === 'test';
 
-      if (shouldBlock) {
+      if (shouldBlock && !disableBlocking) {
         if (user.must_change_password === false) {
           await query('UPDATE users SET must_change_password = true WHERE id = $1', [user.id]);
         }
@@ -94,10 +151,19 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
-    const payload: JwtPayload & { token_version: number } = {
-      id: user.id, email: user.email, role: user.role, token_version: user.token_version, is_verified: user.is_verified
-    };
-    setAuthCookies(res, generateAccessToken(payload), generateRefreshToken(payload));
+    // Mandatory admin 2FA: admins without 2FA enabled may not log in when the
+    // policy is enforced. Default off so existing single-factor admins keep
+    // access until they enroll; set REQUIRE_ADMIN_2FA=true to enforce.
+    if (user.role === 'admin' && process.env.REQUIRE_ADMIN_2FA === 'true') {
+      await insertAuditLog(user.id, 'LOGIN_BLOCKED_MISSING_2FA', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+      res.status(403).json({
+        error: 'Admin accounts must have 2FA enabled. Contact another admin or enable 2FA before logging in.',
+        requires2FA_setup: true,
+      });
+      return;
+    }
+
+    await issueTokens(res, user);
 
     await redisClient.del(`failed_logins:${user.id}`);
     await query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
@@ -147,10 +213,7 @@ router.post('/login/2fa', async (req: Request, res: Response) => {
       return;
     }
 
-    const payload: JwtPayload & { token_version: number } = {
-      id: user.id, email: user.email, role: user.role, token_version: user.token_version, is_verified: user.is_verified
-    };
-    setAuthCookies(res, generateAccessToken(payload), generateRefreshToken(payload));
+    await issueTokens(res, user);
 
     await query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
     await insertAuditLog(user.id, 'LOGIN_2FA_SUCCESS', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
@@ -211,7 +274,9 @@ router.post('/register', async (req: Request, res: Response) => {
 // --- LOGOUT ---
 router.post('/logout', authenticate, async (req: Request, res: Response) => {
   try {
+    const refreshToken = getRefreshTokenFromCookies(req);
     await insertAuditLog(req.user!.id, 'LOGOUT', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+    if (refreshToken) await consumeRefreshToken(req.user!.id, refreshToken);
     clearAuthCookies(res);
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (err) {
@@ -221,16 +286,35 @@ router.post('/logout', authenticate, async (req: Request, res: Response) => {
   }
 });
 
-// --- REFRESH ---
+// --- REFRESH (rotation: single-use tokens) ---
 router.post('/refresh', async (req: Request, res: Response) => {
   try {
     const refreshToken = getRefreshTokenFromCookies(req);
     if (!refreshToken) { res.status(401).json({ error: 'Refresh token required' }); return; }
-    const payload = verifyRefreshToken(refreshToken);
-    const result = await query('SELECT id, email, role, token_version, is_verified, onboarding_complete FROM users WHERE id = $1', [payload.id]);
+
+    let payload: JwtPayload;
+    try {
+      payload = verifyRefreshToken(refreshToken);
+    } catch {
+      // Reject reuse of previously-rotated tokens even after expiry
+      res.status(401).json({ error: 'Invalid refresh token' });
+      return;
+    }
+
+    const result = await query(
+      'SELECT id, email, role, token_version, is_verified, onboarding_complete FROM users WHERE id = $1',
+      [payload.id]
+    );
     if (!result.rows.length) { res.status(401).json({ error: 'User not found' }); return; }
     const user = result.rows[0];
-    setAuthCookies(res, generateAccessToken(user), generateRefreshToken(user));
+
+    // Single-use: the presented token must exist, be un-revoked, and unexpired.
+    const consumed = await consumeRefreshToken(user.id, refreshToken);
+    if (!consumed) { res.status(401).json({ error: 'Refresh token already used' }); return; }
+
+    const newToken = generateRefreshToken(user);
+    await storeRefreshToken(user.id, newToken);
+    setAuthCookies(res, generateAccessToken(user), newToken);
     res.status(200).json({ message: 'Token refreshed successfully' });
   } catch (err) {
     logger.error({ err }, 'Token refresh error');
@@ -262,10 +346,14 @@ router.post('/2fa/enable', authenticate, async (req: Request, res: Response) => 
     const backupCodes: string[] = [];
     const insertValues: { code_hash: string; user_id: string }[] = [];
     for (let i = 0; i < 8; i++) {
-      const code = crypto.randomBytes(4).toString('hex');
+      const code = crypto.randomBytes(16).toString('hex');
       backupCodes.push(code);
-      insertValues.push({ user_id: userId, code_hash: hashToken(code) });
+      insertValues.push({ user_id: userId, code_hash: await hashBackupCode(code) });
     }
+    await query(
+      'DELETE FROM two_factor_backup_codes WHERE user_id = $1',
+      [userId]
+    );
     for (const v of insertValues) {
       await query('INSERT INTO two_factor_backup_codes (user_id, code_hash) VALUES ($1, $2)', [v.user_id, v.code_hash]);
     }
@@ -312,17 +400,19 @@ router.post('/verify-backup-code', async (req: Request, res: Response) => {
     const isValidPassword = await verifyPassword(password, user.password_hash, user.id);
     if (!isValidPassword) { res.status(401).json({ error: 'Invalid credentials' }); return; }
 
-    const codeHash = hashToken(code);
+    // Backup codes are bcrypt-hashed, so fetch the candidate hashes and compare.
     const bcResult = await query(
-      'SELECT id FROM two_factor_backup_codes WHERE user_id = $1 AND code_hash = $2 AND used = false LIMIT 1',
-      [user.id, codeHash]
+      'SELECT id, code_hash FROM two_factor_backup_codes WHERE user_id = $1 AND used = false',
+      [user.id]
     );
-    if (!bcResult.rows.length) { res.status(401).json({ error: 'Invalid or already used backup code' }); return; }
+    let matchedCodeId: string | null = null;
+    for (const row of bcResult.rows) {
+      if (await verifyBackupCode(code, row.code_hash)) { matchedCodeId = row.id; break; }
+    }
+    if (!matchedCodeId) { res.status(401).json({ error: 'Invalid or already used backup code' }); return; }
 
-    await query('UPDATE two_factor_backup_codes SET used = true WHERE id = $1', [bcResult.rows[0].id]);
-
-    const payload: JwtPayload & { token_version: number } = { id: user.id, email, role: user.role, token_version: user.token_version, is_verified: user.is_verified };
-    setAuthCookies(res, generateAccessToken(payload), generateRefreshToken(payload));
+    await query('UPDATE two_factor_backup_codes SET used = true WHERE id = $1', [matchedCodeId]);
+    await issueTokens(res, user);
 
     await insertAuditLog(user.id, '2FA_BACKUP_USED', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
     res.status(200).json({ message: 'Login successful', user: { id: user.id, email: user.email, role: user.role, two_factor_enabled: true, onboarding_complete: user.onboarding_complete } });
@@ -387,6 +477,7 @@ router.post('/reset-password', async (req: Request, res: Response) => {
       'UPDATE users SET password_hash = $1, reset_token_hash = NULL, reset_token_expires = NULL, token_version = token_version + 1 WHERE id = $2',
       [passwordHash, result.rows[0].id]
     );
+    await revokeAllRefreshTokens(result.rows[0].id);
 
     await insertAuditLog(result.rows[0].id, 'PASSWORD_RESET_COMPLETED', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
     res.status(200).json({ message: 'Password reset successful. Please log in with your new password.' });
@@ -420,6 +511,7 @@ router.post('/change-password', authenticate, async (req: Request, res: Response
       'UPDATE users SET password_hash = $1, must_change_password = false, token_version = token_version + 1 WHERE id = $2',
       [passwordHash, userId]
     );
+    await revokeAllRefreshTokens(userId);
 
     clearAuthCookies(res);
     await insertAuditLog(userId, 'PASSWORD_CHANGED', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');

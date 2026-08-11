@@ -2,9 +2,8 @@ import { Router, Request, Response } from 'express';
 import { query } from '../db';
 import { authenticate, authorize } from '../middleware/authorize';
 import { auditLog, insertAuditLog } from '../middleware/auditLogger';
-import { hashPassword } from '../auth/password';
+import { hashPassword, generateTempPassword } from '../auth/password';
 import { generateResetToken, hashToken } from '../auth/jwt';
-import crypto from 'crypto';
 import { sendTempPasswordEmail, sendInviteEmail } from '../email';
 import { unblockIP } from '../middleware/ipBlocker';
 import logger from '../logger';
@@ -50,7 +49,7 @@ router.post('/users', authenticate, authorize('admin'), auditLog('USER_CREATED')
         return;
       }
 
-      const tempPassword = crypto.randomBytes(8).toString('hex');
+      const tempPassword = generateTempPassword();
       const passwordHash = await hashPassword(tempPassword);
 
       const result = await query(
@@ -256,7 +255,7 @@ router.post('/users/:id/reset-password', authenticate, authorize('admin'), audit
         return;
       }
 
-      const tempPassword = crypto.randomBytes(8).toString('hex');
+      const tempPassword = generateTempPassword();
       const passwordHash = await hashPassword(tempPassword);
 
       await query(

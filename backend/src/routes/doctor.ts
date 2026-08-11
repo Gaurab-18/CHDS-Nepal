@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { query } from '../db';
 import { authenticate, authorize } from '../middleware/authorize';
 import { auditLog, insertAuditLog } from '../middleware/auditLogger';
-import { decryptField, encryptField } from '../crypto';
+import { decryptForPatient, makePatientDecryptor, makePatientEncryptor } from '../crypto';
 import { upload, securityScan } from '../middleware/fileUpload';
 import fs from 'fs';
 import logger from '../logger';
@@ -26,22 +26,22 @@ function requireVerifiedDoctor(req: Request, res: Response, next: Function) {
   next();
 }
 
-async function decryptPatientInfo(row: any) {
+async function decryptPatientInfo(row: any, dc: (buf: Buffer) => Promise<string>) {
   return {
     id: row.id,
     user_id: row.user_id,
-    first_name: row.encrypted_first_name ? await decryptField(row.encrypted_first_name) : null,
-    last_name: row.encrypted_last_name ? await decryptField(row.encrypted_last_name) : null,
-    dob: row.encrypted_dob ? await decryptField(row.encrypted_dob) : null,
-    phone: row.encrypted_phone ? await decryptField(row.encrypted_phone) : null,
-    address: row.encrypted_address ? await decryptField(row.encrypted_address) : null,
-    national_id: row.encrypted_national_id ? await decryptField(row.encrypted_national_id) : null,
+    first_name: row.encrypted_first_name ? await dc(row.encrypted_first_name) : null,
+    last_name: row.encrypted_last_name ? await dc(row.encrypted_last_name) : null,
+    dob: row.encrypted_dob ? await dc(row.encrypted_dob) : null,
+    phone: row.encrypted_phone ? await dc(row.encrypted_phone) : null,
+    address: row.encrypted_address ? await dc(row.encrypted_address) : null,
+    national_id: row.encrypted_national_id ? await dc(row.encrypted_national_id) : null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
 }
 
-async function decryptRecord(row: any) {
+async function decryptRecord(row: any, dc: (buf: Buffer) => Promise<string>) {
   return {
     id: row.id,
     patient_id: row.patient_id,
@@ -49,10 +49,10 @@ async function decryptRecord(row: any) {
     doctor_id: row.doctor_id,
     source: row.source,
     category: row.category || 'general',
-    title: row.encrypted_title ? await decryptField(row.encrypted_title) : null,
-    description: row.encrypted_description ? await decryptField(row.encrypted_description) : null,
-    file_path: row.encrypted_file_path ? await decryptField(row.encrypted_file_path) : null,
-    file_hash: row.encrypted_file_hash ? await decryptField(row.encrypted_file_hash) : null,
+    title: row.encrypted_title ? await dc(row.encrypted_title) : null,
+    description: row.encrypted_description ? await dc(row.encrypted_description) : null,
+    file_path: row.encrypted_file_path ? await dc(row.encrypted_file_path) : null,
+    file_hash: row.encrypted_file_hash ? await dc(row.encrypted_file_hash) : null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -170,7 +170,8 @@ router.get('/patients', authenticate, authorize('doctor'), requireVerifiedDoctor
 
     const decrypted = await Promise.all(result.rows.map(async (row: any) => {
       try {
-        const info = await decryptPatientInfo(row);
+        const dc = await makePatientDecryptor(row.id);
+        const info = await decryptPatientInfo(row, dc);
         const consent = await checkActiveConsent(info.id, req.user!.id);
         return {
           id: info.id,
@@ -207,7 +208,8 @@ router.get('/patients/:patientId/profile', authenticate, authorize('doctor'), re
       res.status(404).json({ error: 'Patient not found' });
       return;
     }
-    const info = await decryptPatientInfo(result.rows[0]);
+    const dc = await makePatientDecryptor(result.rows[0].id);
+    const info = await decryptPatientInfo(result.rows[0], dc);
     res.status(200).json(info);
   } catch (err) {
     logger.error({ err }, 'Fetch patient profile error');
@@ -218,7 +220,22 @@ router.get('/patients/:patientId/profile', authenticate, authorize('doctor'), re
 router.get('/patients/:patientId/records', authenticate, authorize('doctor'), requireVerifiedDoctor,
   async (req: Request, res: Response) => {
     try {
+      const consent = await checkActiveConsent(req.params.patientId, req.user!.id);
+
       const result = await query(
+        `SELECT r.*,
+                CASE WHEN r.source = 'patient_upload' THEN 'patient' ELSE 'doctor' END AS source_label
+         FROM records r
+         WHERE r.patient_id = $1 AND r.doctor_id = $2`,
+        [req.params.patientId, req.user!.id]
+      );
+
+      if (!consent.exists && result.rows.length === 0) {
+        res.status(403).json({ error: 'No active consent from this patient' });
+        return;
+      }
+
+      const gated = await query(
         `SELECT r.*,
                 CASE WHEN r.source = 'patient_upload' THEN 'patient' ELSE 'doctor' END AS source_label
          FROM records r
@@ -236,7 +253,8 @@ router.get('/patients/:patientId/records', authenticate, authorize('doctor'), re
         [req.params.patientId, req.user!.id]
       );
 
-      const decrypted = await Promise.all(result.rows.map(decryptRecord));
+      const dc = await makePatientDecryptor(req.params.patientId);
+      const decrypted = await Promise.all(gated.rows.map((row: any) => decryptRecord(row, dc)));
 
       await insertAuditLog(
         req.user!.id,
@@ -293,7 +311,7 @@ router.get('/patients/:patientId/records/:recordId/file', authenticate, authoriz
         return;
       }
 
-      const decryptedPath = await decryptField(recordResult.rows[0].encrypted_file_path);
+      const decryptedPath = await decryptForPatient(patientId, recordResult.rows[0].encrypted_file_path);
 
       if (!fs.existsSync(decryptedPath)) {
         res.status(404).json({ error: 'File not found on storage' });
@@ -344,8 +362,9 @@ router.post('/patients/:patientId/records', authenticate, authorize('doctor'), r
       const sanitizedTitle = sanitizeInput(title);
       const sanitizedDesc = sanitizeInput(description);
 
-      const encTitle = await encryptField(sanitizedTitle);
-      const encDescription = await encryptField(sanitizedDesc);
+      const ec = await makePatientEncryptor(req.params.patientId);
+      const encTitle = await ec(sanitizedTitle);
+      const encDescription = await ec(sanitizedDesc);
 
       const result = await query(
         `INSERT INTO records (patient_id, doctor_id, source, category, encrypted_title, encrypted_description)
@@ -423,10 +442,11 @@ router.post('/patients/:patientId/upload', authenticate, authorize('doctor'), re
       const sanitizedTitle = sanitizeInput(title);
       const sanitizedDesc = sanitizeInput(description);
 
-      const encTitle = await encryptField(sanitizedTitle);
-      const encDescription = await encryptField(sanitizedDesc);
-      const encPath = await encryptField(file.path);
-      const encHash = await encryptField(file.filename);
+      const ec = await makePatientEncryptor(req.params.patientId);
+      const encTitle = await ec(sanitizedTitle);
+      const encDescription = await ec(sanitizedDesc);
+      const encPath = await ec(file.path);
+      const encHash = await ec(file.filename);
 
       const result = await query(
         `INSERT INTO records (patient_id, doctor_id, source, category, encrypted_title, encrypted_description, encrypted_file_path, encrypted_file_hash)
@@ -524,7 +544,7 @@ router.post('/emergency-override', authenticate, authorize('doctor'), requireVer
         'SELECT user_id FROM patients WHERE id = $1',
         [patient_id]
       );
-      if (patientUser.rows.length) {
+      if (patientUser.rows.length && patientUser.rows[0].user_id) {
         await query(
           `INSERT INTO notifications (user_id, title, message)
            VALUES ($1, 'Emergency Override', $2)`,
@@ -533,7 +553,14 @@ router.post('/emergency-override', authenticate, authorize('doctor'), requireVer
         );
       }
 
-      const decrypted = await Promise.all(result.rows.map(decryptRecord));
+const dc = await makePatientDecryptor(patient_id);
+const decrypted = (await Promise.all(result.rows.map(async (row: any) => {
+      try {
+        return await decryptRecord(row, dc);
+      } catch {
+        return null;
+      }
+    }))).filter((r: any): r is any => r !== null);
 
       // Log per-record access
       if (decrypted.length > 0) {
@@ -590,7 +617,7 @@ router.post('/consent-request/:patientId', authenticate, authorize('doctor'), re
       [patientId]
     );
 
-    if (patientUser.rows.length) {
+    if (patientUser.rows.length && patientUser.rows[0].user_id) {
       const docProfile = await query(
         'SELECT full_name, hospital_name FROM doctor_profiles WHERE user_id = $1',
         [doctorId]

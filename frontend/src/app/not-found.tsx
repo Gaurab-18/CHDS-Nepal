@@ -5,12 +5,12 @@ import Link from 'next/link';
 export default function NotFound() {
   return (
     <div className="fixed inset-0 z-[9998] flex flex-col items-center justify-center bg-gray-950">
-      <div style={{ width: 300, height: 300 }}>
+      <div style={{ width: 420, height: 420 }}>
         <dotlottie-wc
-          src="https://lottie.host/bccd1ef1-08a9-4347-a1f2-ad4b582f3dac/JNrEasMGSI.lottie"
+          src="https://lottie.host/161a63ed-4444-407e-aca2-ca2fb52b0c0f/GNzy02MHMf.lottie"
           autoplay
           loop
-          style={{ width: '300px', height: '300px' }}
+          style={{ width: '420px', height: '420px' }}
         />
       </div>
       <h1 className="mt-4 text-2xl font-bold text-white">Page not found</h1>

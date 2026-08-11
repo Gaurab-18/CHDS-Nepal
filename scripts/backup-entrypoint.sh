@@ -1,5 +1,5 @@
 #!/bin/sh
-# CHDS automated backup entrypoint — runs inside Docker container
+# CHDS automated backup entrypoint : runs inside Docker container
 
 while true; do
   FILE="/backups/chds_db_$(date +%Y%m%d_%H%M%S).sql.gz"
@@ -7,7 +7,7 @@ while true; do
   pg_dump | gzip > "$FILE"
   SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
   if [ "$SIZE" -eq 0 ]; then
-    echo "ERROR: backup file is empty — removing"
+    echo "ERROR: backup file is empty : removing"
     rm -f "$FILE"
   else
     HR_SIZE=$(awk "BEGIN{printf \"%.0fK\", $SIZE/1024}" 2>/dev/null || echo "${SIZE}B")

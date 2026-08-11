@@ -2,7 +2,7 @@ import { query } from '../src/db';
 import { loginAs, clearCookies } from './helpers';
 
 const PATIENT_EMAIL = 'patient@chds.np';
-const PASSWORD = '@CHDS2024!';
+const PASSWORD = '@CHDS2026!';
 
 describe('Encryption', () => {
 
@@ -33,8 +33,8 @@ describe('Encryption', () => {
     const { status } = await loginAs(PATIENT_EMAIL, PASSWORD);
     expect(status).toBe(200);
 
-    const { getCookies } = require('./helpers');
-    const res = await fetch('http://localhost:4000/api/v1/patient/records', {
+    const { getCookies, apiUrl } = require('./helpers');
+    const res = await fetch(apiUrl('/patient/records'), {
       headers: { Cookie: getCookies().join('; ') },
     });
     expect(res.status).toBe(200);

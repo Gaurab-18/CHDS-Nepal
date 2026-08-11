@@ -18,12 +18,12 @@ function BlockedContent() {
 
   return (
     <div className="fixed inset-0 z-[9998] flex flex-col items-center justify-center bg-gray-950 px-4">
-      <div style={{ width: 300, height: 300 }}>
+      <div style={{ width: 420, height: 420 }}>
         <dotlottie-wc
-          src="https://lottie.host/ba617da7-2d05-49f6-ab4e-ee75fe85c55e/hn42sVRWJX.lottie"
+          src="https://lottie.host/5abc427f-4494-479a-8d95-ec54555489c3/Wi3NqNpGfQ.lottie"
           autoplay
           loop
-          style={{ width: '300px', height: '300px' }}
+          style={{ width: '420px', height: '420px' }}
         />
       </div>
       <h1 className="mt-4 text-2xl font-bold text-white text-center">Account Under Review</h1>

@@ -49,7 +49,7 @@ async function main() {
     for (let i = 0; i < 3; i++) {
       const r = await pool.query(
         `INSERT INTO users (username, email, password_hash, role, two_factor_enabled, active)
-         VALUES (gen_random_uuid(), $1, crypt('@CHDS2024!', gen_salt('bf', 12)), 'doctor', false, true)
+         VALUES (gen_random_uuid(), $1, crypt('@CHDS2026!', gen_salt('bf', 12)), 'doctor', false, true)
          RETURNING id`,
         [`doctor${Date.now()}${i}@example.com`]
       );
@@ -68,7 +68,7 @@ async function main() {
     const username = faker.internet.username();
     const userR = await pool.query(
       `INSERT INTO users (id, username, email, password_hash, role, onboarding_complete)
-       VALUES (gen_random_uuid(), $1, $2, crypt('@CHDS2024!', gen_salt('bf', 12)), 'patient', true)
+       VALUES (gen_random_uuid(), $1, $2, crypt('@CHDS2026!', gen_salt('bf', 12)), 'patient', true)
        ON CONFLICT (email) DO NOTHING
        RETURNING id`,
       [username, email]

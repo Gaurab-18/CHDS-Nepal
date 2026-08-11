@@ -74,6 +74,7 @@ export default function LoginPage() {
       }
 
       login(data.user);
+      if (data.must_change_password) { router.push('/change-password'); return; }
       if (data.user.role === 'admin') router.push('/admin/users');
       else if (data.user.role === 'doctor') router.push('/doctor/search');
       else router.push('/dashboard');

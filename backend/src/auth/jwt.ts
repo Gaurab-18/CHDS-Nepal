@@ -32,7 +32,8 @@ export const generateRefreshToken = (payload: JwtPayload & { token_version?: num
   const options: SignOptions = {
     expiresIn: REFRESH_TOKEN_EXPIRY,
     issuer: 'chds-nepal',
-    audience: 'chds-client'
+    audience: 'chds-client',
+    jwtid: crypto.randomBytes(16).toString('hex')
   };
   return jwt.sign(payload, getRefreshSecret(), options);
 };
@@ -94,4 +95,42 @@ export const generateResetToken = (): string => {
 
 export const hashToken = (token: string): string => {
   return crypto.createHash('sha256').update(token).digest('hex');
+};
+
+// ── Refresh token rotation (single-use) ──────────────────────────────
+// Refresh tokens are stored hashed in refresh_tokens. Each use revokes
+// the presented token and (in the route) issues a brand-new one, so a
+// stolen token cannot be replayed after rotation.
+
+import { query } from '../db';
+
+const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export const storeRefreshToken = async (userId: string, token: string): Promise<void> => {
+  const tokenHash = hashToken(token);
+  await query(
+    `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+     VALUES ($1, $2, NOW() + ($3::bigint || ' milliseconds')::interval)`,
+    [userId, tokenHash, REFRESH_TTL_MS]
+  );
+};
+
+// Marks the presented token as used. Returns true if it was valid (present + not revoked).
+export const consumeRefreshToken = async (userId: string, token: string): Promise<boolean> => {
+  const tokenHash = hashToken(token);
+  const { rows } = await query(
+    `UPDATE refresh_tokens
+     SET revoked_at = NOW()
+     WHERE user_id = $1 AND token_hash = $2 AND revoked_at IS NULL AND expires_at > NOW()
+     RETURNING id`,
+    [userId, tokenHash]
+  );
+  return rows.length > 0;
+};
+
+export const revokeAllRefreshTokens = async (userId: string): Promise<void> => {
+  await query(
+    `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+    [userId]
+  );
 };

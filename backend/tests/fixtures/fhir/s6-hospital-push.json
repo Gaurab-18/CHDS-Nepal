@@ -1,0 +1,54 @@
+{
+  "resourceType": "Bundle",
+  "type": "transaction",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "S6-PUSH",
+        "identifier": [
+          {
+            "system": "http://chds.np/national-id",
+            "type": {
+              "text": "NID"
+            },
+            "value": "2110202020202020"
+          }
+        ],
+        "name": [
+          {
+            "family": "Gurung",
+            "given": [
+              "Bina"
+            ]
+          }
+        ],
+        "birthDate": "1992-11-02",
+        "gender": "female",
+        "given": "Bina",
+        "family": "Gurung",
+        "telecom": "bina.gurung@test.np"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "X",
+              "display": "Vitamin D"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/S6-PUSH"
+        },
+        "valueString": "25",
+        "effectiveDateTime": "2026-08-09T05:08:52.848Z"
+      }
+    }
+  ]
+}

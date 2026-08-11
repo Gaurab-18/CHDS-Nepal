@@ -11,6 +11,7 @@ export type HospitalEventType =
   | 'patient_match'
   | 'match_confirm'
   | 'match_reject'
+  | 'match_expire'
   | 'consent_auto'
   | 'consent_revoke';
 

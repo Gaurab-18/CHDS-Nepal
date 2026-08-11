@@ -3,7 +3,7 @@ import { loginAs, apiPost, clearCookies, apiUrl } from './helpers';
 const PATIENT_EMAIL = 'patient@chds.np';
 const DOCTOR_EMAIL = 'doctor@chds.np';
 const ADMIN_EMAIL = 'admin@chds.np';
-const PASSWORD = '@CHDS2024!';
+const PASSWORD = '@CHDS2026!';
 
 describe('Auth API', () => {
 

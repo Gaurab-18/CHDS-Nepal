@@ -1,0 +1,53 @@
+{
+  "resourceType": "Bundle",
+  "type": "transaction",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "BIR-NID1",
+        "identifier": [
+          {
+            "system": "http://chds.np/national-id",
+            "type": {
+              "text": "NID"
+            },
+            "value": "1000111122223333"
+          }
+        ],
+        "name": [
+          {
+            "family": "Lama",
+            "given": [
+              "Suraj"
+            ]
+          }
+        ],
+        "birthDate": "1990-05-15",
+        "gender": "male",
+        "given": "Suraj",
+        "family": "Lama"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "X",
+              "display": "Fasting Blood Glucose"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/BIR-NID1"
+        },
+        "valueString": "95",
+        "effectiveDateTime": "2026-08-09T05:08:52.842Z"
+      }
+    }
+  ]
+}

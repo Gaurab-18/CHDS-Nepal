@@ -1,5 +1,5 @@
 import { query } from '../db';
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 
 export interface FHIRPatientExtract {
   hospitalLocalId: string;
@@ -11,6 +11,16 @@ export interface FHIRPatientExtract {
 
 // Nepal NID: exactly 16 numeric digits
 const NID_REGEX = /^\d{16}$/;
+
+// Constant-time comparison of two hex NID hashes so a requester cannot learn
+// how many hash bytes match by observing response timing.
+function nidHashesEqual(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const bufA = Buffer.from(a, 'hex');
+  const bufB = Buffer.from(b, 'hex');
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
 
 export function validateNid(nid: string): { valid: boolean; error?: string } {
   if (!NID_REGEX.test(nid)) {
@@ -30,6 +40,8 @@ export interface MatchResult {
   matchMethod?: string;
   confidence: number;
   score: number;
+  requiresEvidence?: boolean;
+  reason?: string;
 }
 
 function hashNid(nid: string): string {
@@ -72,12 +84,10 @@ export async function matchPatient(
   incoming: FHIRPatientExtract
 ): Promise<MatchResult> {
 
-  if (incoming.nid) {
-    const validation = validateNid(incoming.nid);
-    if (!validation.valid) {
-      // NID format invalid : skip fast path but still process
-      // The error is returned so the caller can log it
-    }
+  const nidValid = incoming.nid ? validateNid(incoming.nid).valid : false;
+
+  // ── Rule 1: authoritative NID auto-link ─────────────────────
+  if (incoming.nid && nidValid) {
     const nidHash = hashNid(incoming.nid);
     const { rows } = await query(
       `SELECT id FROM patients WHERE nid_hash = $1 LIMIT 1`,
@@ -94,8 +104,9 @@ export async function matchPatient(
     }
   }
 
+  // ── Composite candidate search ────────────────────────────────
   const { rows: candidates } = await query(
-    `SELECT id, full_name, date_of_birth, gender
+    `SELECT id, full_name, date_of_birth, gender, nid_hash
      FROM patients
      WHERE date_of_birth = $1
         OR LOWER(full_name) = LOWER($2)`,
@@ -119,25 +130,52 @@ export async function matchPatient(
 
   const confidence = bestScore / 110;
 
-  if (bestScore >= 75) {
+  // ── Rule 2: valid NID provided → NID is authoritative ─────────
+  // A valid national ID uniquely identifies one person. If Rule 1 found no exact
+  // NID match, this is a DIFFERENT person : even if name/DOB/gender collide with
+  // an existing record. Create a separate patient; there is nothing to hold back.
+  if (incoming.nid && nidValid) {
+    const incomingNidHash = hashNid(incoming.nid);
+
+    // Index-drift safety: if a candidate carries the SAME NID hash but Rule 1's
+    // exact lookup missed it, it's the same person with a data integrity issue →
+    // route to review instead of creating a duplicate.
+    const sameNidCandidate = candidates.find((c) => nidHashesEqual(incomingNidHash, c.nid_hash));
+    if (sameNidCandidate) {
+      return {
+        action: 'pending_review',
+        chdsPatientId: sameNidCandidate.id,
+        matchMethod: 'nid',
+        confidence,
+        score: bestScore,
+        requiresEvidence: true,
+        reason: 'Incoming and stored NID are identical but the exact NID index did not link. Review before merging.'
+      };
+    }
+
+    // No existing patient has this NID → distinct person. Demographics match is
+    // not enough to merge when a valid NID is present.
     return {
-      action: 'auto-link',
-      chdsPatientId: bestId,
-      matchMethod: 'composite',
-      confidence,
-      score: bestScore
+      action: 'create_new',
+      confidence: 0,
+      score: bestScore,
+      reason: 'Valid NID provided and not found on file : distinct person despite matching demographics.'
     };
   }
 
+  // ── Rule 3: no NID → never auto-link, always review ───────────
   if (bestScore >= 40) {
     return {
       action: 'pending_review',
       chdsPatientId: bestId,
       matchMethod: 'composite',
       confidence,
-      score: bestScore
+      score: bestScore,
+      requiresEvidence: true,
+      reason: 'Matching on demographics only (no national ID). Review before merging to avoid merging different people with same name/DOB/gender.'
     };
   }
 
+  // ── Rule 4: below threshold → new patient ─────────────────────
   return { action: 'create_new', confidence, score: bestScore };
 }

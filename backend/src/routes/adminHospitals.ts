@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
-import { query } from '../db';
+import pool, { query } from '../db';
 import { authenticate, authorize } from '../middleware/authorize';
 import { randomBytes, createHash } from 'crypto';
 import { insertHospitalAuditLog } from '../hospital/auditLog';
+import { encryptForPatient } from '../crypto';
+import { getGraceHours } from '../middleware/hospitalAuth';
 
 const router = Router();
 
@@ -108,13 +110,29 @@ router.post('/:id/regenerate-key', authenticate, authorize('admin'), async (req:
   const plainKey = randomBytes(32).toString('hex');
   const keyHash  = createHash('sha256').update(plainKey).digest('hex');
 
-  const { rows } = await query(
-    `UPDATE hospitals SET api_key_hash = $1 WHERE id = $2
-     RETURNING id, name`,
-    [keyHash, req.params.id]
+  const { rows: current } = await query(
+    'SELECT api_key_hash FROM hospitals WHERE id = $1',
+    [req.params.id]
   );
+  if (current.length === 0) return res.status(404).json({ error: 'Hospital not found' });
 
-  if (rows.length === 0) return res.status(404).json({ error: 'Hospital not found' });
+  const graceH = getGraceHours();
+
+  // Keep the old key valid for a grace period so the hospital can update
+  // their config without downtime. After the window it no longer authenticates.
+  const { rows } = await query(
+    `UPDATE hospitals
+     SET api_key_hash = $1,
+         api_key_previous_hash = CASE
+           WHEN api_key_previous_expires_at > CURRENT_TIMESTAMP AND api_key_previous_hash IS NOT NULL
+             THEN api_key_previous_hash
+           ELSE api_key_hash
+         END,
+         api_key_previous_expires_at = CURRENT_TIMESTAMP + ($3::int || ' hours')::interval
+     WHERE id = $2
+     RETURNING id, name`,
+    [keyHash, req.params.id, graceH]
+  );
 
   await insertHospitalAuditLog({
     hospitalId: rows[0].id,
@@ -124,14 +142,62 @@ router.post('/:id/regenerate-key', authenticate, authorize('admin'), async (req:
     targetType: 'hospital',
     targetId: rows[0].id,
     outcome: 'success',
-    details: { key_regenerated: true },
+    details: { key_regenerated: true, grace_period_hours: graceH },
     ipAddress: req.ip,
   });
 
   return res.json({
     hospital: rows[0],
     api_key: plainKey,
-    message: 'Old key is now invalid. Copy this new key : it will not be shown again.'
+    grace_period_hours: graceH,
+    message: `New key issued. Previous key remains valid for ${graceH} hour(s) to avoid downtime. Copy this new key: it will not be shown again.`
+  });
+});
+
+// Alias: rotate-key is the canonical rotation endpoint (same semantics).
+router.post('/:id/rotate-key', authenticate, authorize('admin'), async (req: Request, res: Response) => {
+  const plainKey = randomBytes(32).toString('hex');
+  const keyHash  = createHash('sha256').update(plainKey).digest('hex');
+
+  const { rows: current } = await query(
+    'SELECT api_key_hash FROM hospitals WHERE id = $1',
+    [req.params.id]
+  );
+  if (current.length === 0) return res.status(404).json({ error: 'Hospital not found' });
+
+  const graceH = getGraceHours();
+
+  const { rows } = await query(
+    `UPDATE hospitals
+     SET api_key_hash = $1,
+         api_key_previous_hash = CASE
+           WHEN api_key_previous_expires_at > CURRENT_TIMESTAMP AND api_key_previous_hash IS NOT NULL
+             THEN api_key_previous_hash
+           ELSE api_key_hash
+         END,
+         api_key_previous_expires_at = CURRENT_TIMESTAMP + ($3::int || ' hours')::interval
+     WHERE id = $2
+     RETURNING id, name`,
+    [keyHash, req.params.id, graceH]
+  );
+
+  await insertHospitalAuditLog({
+    hospitalId: rows[0].id,
+    eventType: 'api_key_regen',
+    actorType: 'admin',
+    actorId: req.user!.id,
+    targetType: 'hospital',
+    targetId: rows[0].id,
+    outcome: 'success',
+    details: { key_rotated: true, grace_period_hours: graceH },
+    ipAddress: req.ip,
+  });
+
+  return res.json({
+    hospital: rows[0],
+    api_key: plainKey,
+    grace_period_hours: graceH,
+    message: `API key rotated. Previous key remains valid for ${graceH} hour(s). Copy this new key: it will not be shown again.`
   });
 });
 
@@ -163,9 +229,10 @@ router.post('/matches/:linkId/confirm', authenticate, authorize('admin'), async 
     return res.status(400).json({ error: 'action must be confirm | reject' });
   }
 
-  // Fetch link details for audit log
+  // Fetch link details for audit log + held bundle
   const { rows: linkRows } = await query(
-    `SELECT hpl.hospital_id, hpl.match_method, hpl.match_confidence,
+    `SELECT hpl.id, hpl.chds_patient_id, hpl.hospital_id, hpl.match_method,
+            hpl.match_confidence, hpl.pending_bundle, hpl.pending_reason, hpl.status,
             h.name AS hospital_name
      FROM hospital_patient_links hpl
      JOIN hospitals h ON h.id = hpl.hospital_id
@@ -174,41 +241,95 @@ router.post('/matches/:linkId/confirm', authenticate, authorize('admin'), async 
   );
 
   if (linkRows.length === 0) return res.status(404).json({ error: 'Match link not found' });
+  const link = linkRows[0];
 
   if (action === 'confirm') {
-    await query(
-      `UPDATE hospital_patient_links
-       SET status = 'confirmed', match_method = 'admin_confirmed'
-       WHERE id = $1`,
-      [req.params.linkId]
-    );
+    const evidence = (req.body.evidence || '').trim();
+    if (!evidence) {
+      return res.status(400).json({ error: 'Evidence is required to confirm a match (must verify the two records belong to the same person).' });
+    }
 
-    await insertHospitalAuditLog({
-      hospitalId: linkRows[0].hospital_id,
-      eventType: 'match_confirm',
-      actorType: 'admin',
-      actorId: req.user!.id,
-      targetType: 'link',
-      targetId: req.params.linkId,
-      outcome: 'success',
-      details: {
-        hospital_name: linkRows[0].hospital_name,
-        previous_method: linkRows[0].match_method,
-        previous_confidence: linkRows[0].match_confidence
-      },
-      ipAddress: req.ip,
-    });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    return res.json({ message: 'Match confirmed. Records will now be visible.' });
+      // Import any held clinical records from the pending bundle
+      let recordsImported = 0;
+      if (link.pending_bundle) {
+        const entries: any[] = typeof link.pending_bundle === 'string'
+          ? JSON.parse(link.pending_bundle)
+          : link.pending_bundle;
+        const categoryMap: Record<string, string> = {
+          Observation:        'general',
+          DiagnosticReport:   'general',
+          Condition:          'general',
+          MedicationRequest:  'prescription',
+        };
+        for (const entry of entries) {
+          const resource = entry.resource;
+          if (!resource) continue;
+          const category = categoryMap[resource.resourceType] || 'general';
+          const title = `${resource.resourceType}: ${resource.code?.coding?.[0]?.display || resource.code?.text || resource.resourceType}`;
+          const encTitle = await encryptForPatient(link.chds_patient_id, title);
+          const encDesc = await encryptForPatient(link.chds_patient_id, JSON.stringify(resource));
+          await client.query(
+            `INSERT INTO records
+               (patient_id, hospital_id, doctor_id, source, category, encrypted_title, encrypted_description, created_at)
+             VALUES ($1, $2, NULL, 'hospital_push', $3, $4, $5, NOW())`,
+            [link.chds_patient_id, link.hospital_id, category, encTitle, encDesc]
+          );
+          recordsImported++;
+        }
+      }
+
+      await client.query(
+        `UPDATE hospital_patient_links
+         SET status = 'confirmed', match_method = 'admin_confirmed',
+             evidence = $2, reviewed_by = $3, reviewed_at = NOW(),
+             pending_bundle = NULL, pending_reason = NULL
+         WHERE id = $1`,
+        [req.params.linkId, evidence, req.user!.id]
+      );
+
+      await client.query('COMMIT');
+
+      await insertHospitalAuditLog({
+        hospitalId: link.hospital_id,
+        eventType: 'match_confirm',
+        actorType: 'admin',
+        actorId: req.user!.id,
+        targetType: 'link',
+        targetId: req.params.linkId,
+        outcome: 'success',
+        details: {
+          hospital_name: link.hospital_name,
+          previous_method: link.match_method,
+          previous_confidence: link.match_confidence,
+          evidence,
+          records_imported: recordsImported,
+          pending_reason: link.pending_reason,
+        },
+        ipAddress: req.ip,
+      });
+
+      return res.json({ message: 'Match confirmed. Records will now be visible.', records_imported: recordsImported });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('Confirm match error:', err);
+      return res.status(500).json({ error: 'Failed to confirm match. Transaction rolled back.' });
+    } finally {
+      client.release();
+    }
   }
 
+  // Reject: discard the link and its held bundle (no records imported)
   await query(
     `DELETE FROM hospital_patient_links WHERE id = $1`,
     [req.params.linkId]
   );
 
   await insertHospitalAuditLog({
-    hospitalId: linkRows[0].hospital_id,
+    hospitalId: link.hospital_id,
     eventType: 'match_reject',
     actorType: 'admin',
     actorId: req.user!.id,
@@ -216,9 +337,11 @@ router.post('/matches/:linkId/confirm', authenticate, authorize('admin'), async 
     targetId: req.params.linkId,
     outcome: 'success',
     details: {
-      hospital_name: linkRows[0].hospital_name,
-      previous_method: linkRows[0].match_method,
-      previous_confidence: linkRows[0].match_confidence
+      hospital_name: link.hospital_name,
+      previous_method: link.match_method,
+      previous_confidence: link.match_confidence,
+      pending_reason: link.pending_reason,
+      records_discarded: link.pending_bundle ? (typeof link.pending_bundle === 'string' ? JSON.parse(link.pending_bundle) : link.pending_bundle).length : 0,
     },
     ipAddress: req.ip,
   });

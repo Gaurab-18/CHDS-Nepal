@@ -3,7 +3,7 @@ set -euo pipefail
 # CHDS Database Restore
 # Usage: ./scripts/restore-db.sh <backup_file>
 # Drops and recreates chds_db from a compressed pg_dump.
-# Run ONLY against a fresh/staging DB — data loss is irreversible.
+# Run ONLY against a fresh/staging DB : data loss is irreversible.
 
 if [ $# -ne 1 ]; then
   echo "Usage: $0 <backup_file>" >&2

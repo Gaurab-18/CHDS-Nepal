@@ -22,7 +22,7 @@ docker exec chds_db pg_dump -U postgres -d chds_db --clean --if-exists | gzip > 
 BACKUP_SIZE=$(stat --printf="%s" "$BACKUP_FILE" 2>/dev/null || echo 0)
 
 if [ "$BACKUP_SIZE" -eq 0 ]; then
-  echo "ERROR: backup file is empty — pg_dump may have failed" >&2
+  echo "ERROR: backup file is empty : pg_dump may have failed" >&2
   rm -f "$BACKUP_FILE"
   exit 1
 fi
@@ -34,4 +34,4 @@ find "$BACKUP_DIR" -name 'chds_db_*.sql.gz' -mtime +$RETENTION_DAYS -delete
 
 # Count remaining
 COUNT=$(find "$BACKUP_DIR" -name 'chds_db_*.sql.gz' | wc -l)
-echo "Done — ${COUNT} backup(s) retained (pruned >${RETENTION_DAYS}d)"
+echo "Done : ${COUNT} backup(s) retained (pruned >${RETENTION_DAYS}d)"

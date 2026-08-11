@@ -14,12 +14,23 @@ export interface HospitalRequest extends Request {
   hospital?: HospitalInfo;
 }
 
-// Shared lookup logic used by both middleware variants
+// During key rotation the previous key stays valid for a grace window so the
+// hospital can update their config without downtime. Default 24h.
+export const getGraceHours = (): number => {
+  const hours = parseInt(process.env.HOSPITAL_KEY_GRACE_HOURS || '24', 10);
+  return Number.isFinite(hours) && hours > 0 ? hours : 24;
+};
+
+// Shared lookup logic used by both middleware variants.
+// Accepts the current key, or the previous key while still within its grace window.
 async function lookupHospital(apiKey: string): Promise<HospitalInfo | null> {
   const keyHash = createHash('sha256').update(apiKey).digest('hex');
   const { rows } = await query(
     `SELECT id, name, status, terms_accepted_at, terms_version
-     FROM hospitals WHERE api_key_hash = $1`,
+     FROM hospitals
+     WHERE api_key_hash = $1
+        OR (api_key_previous_hash = $1 AND api_key_previous_expires_at > CURRENT_TIMESTAMP)
+     LIMIT 1`,
     [keyHash]
   );
   return rows.length > 0 ? rows[0] : null;

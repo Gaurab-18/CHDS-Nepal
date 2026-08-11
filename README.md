@@ -1,9 +1,11 @@
-# CHDS Nepal
+# CHDS Nepal : Centralized Healthcare Data Sharing System
+
+A secure, privacy-first platform that centralizes patient health records across Nepali hospitals. CHDS enables patients to own and control their PHI, doctors to access consent-gated records, and hospitals to share clinical data via FHIR : with AES-256 encryption at rest, per-patient encryption keys, and a full audit trail.
 
 ## Architecture
 
 ```
-Caddy (HTTPS termination : ports 80/443)
+Caddy (HTTPS termination : ports 80/443, HSTS + hardened security headers)
   ├── /api/* → Backend (Express, TypeScript, port 4000)
   └── /*     → Frontend (Next.js 14, Tailwind CSS, port 3000)
 
@@ -19,7 +21,8 @@ Backend (Express + TypeScript) : 9 route files, 97+ endpoints
   └── HospitalTerms  : Terms & conditions acceptance for hospital partners
 
 Database  (PostgreSQL 15 + pgcrypto)
-  ├── AES-256 field-level PHI encryption (pgp_sym_encrypt)
+  ├── Per-patient AES-256 keys derived via HKDF-SHA256 (enc_key_salt per row)
+  ├── Legacy rows fall back to the master key (migrate-legacy-rows.ts)
   ├── Append-only audit_log (UPDATE/DELETE revoked for app_user)
   ├── Per-record consent visibility toggles
   ├── Hospital patient matching (nid_hash + composite scoring)
@@ -32,9 +35,19 @@ Message  (Mailpit : dev SMTP capture)
   └── http://localhost:8025
 ```
 
+## Security Highlights
+
+- **Per-patient encryption keys** : each patient row has a random 32-byte `enc_key_salt`; AES-256 keys are derived with HKDF-SHA256, so a single master-key compromise does not expose every patient's PHI.
+- **Timing-safe NID matching** : `crypto.timingSafeEqual` prevents hash-comparison side channels.
+- **Brute-force protection** : IP blocking after 7 failed logins, rapid-fire detection (5+/60s → `SUSPICIOUS_ACTIVITY`), and a hardening probe that verifies 30 attack vectors (`scripts/run-security-probe.sh`).
+- **Hardened transport** : HSTS, `nosniff`, `DENY` framing, `no-referrer`, restrictive `Permissions-Policy`, and `helmet` on the backend.
+- **Non-root containers** : backend/frontend/redis run as `node` with `read_only: true` root filesystems and tmpfs `/tmp`.
+- **Uploads auth-gated** : `/api/v1/uploads` requires a session; blocked extensions are rejected, allowed uploads pass ext + MIME + magic-byte scans, and files are served `text/plain` with `nosniff`.
+
 ## Quick Start
 
 ```bash
+cp .env.example .env    # then fill in real secrets (or use defaults for local dev)
 docker compose up --build
 ```
 
@@ -91,6 +104,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 | `REDIS_HOST`         | Yes      | Redis host                               |
 | `REDIS_PORT`         | Yes      | Redis port                               |
 | `BREACH_THRESHOLD`   | No       | Failed logins before IP block (default: 7) |
+| `REQUIRE_ADMIN_2FA`  | No       | Enforce 2FA for admin accounts (default: false) |
 | `SMTP_HOST`          | Email    | SMTP server (default: mailpit)           |
 | `SMTP_USER`          | Email    | SMTP username                            |
 | `SMTP_PASS`          | Email    | SMTP password / app password             |
@@ -99,9 +113,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 | Role    | Email             | Password    |
 |---------|-------------------|-------------|
-| Admin   | admin@chds.np     | @CHDS2024!  |
-| Doctor  | doctor@chds.np    | @CHDS2024!  |
-| Patient | patient@chds.np   | @CHDS2024!  |
+| Admin   | admin@chds.np     | @CHDS2026!  |
+| Doctor  | doctor@chds.np    | @CHDS2026!  |
+| Patient | patient@chds.np   | @CHDS2026!  |
 
 ## API Endpoints
 
@@ -120,17 +134,31 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 ## Test Suite
 
-| Layer     | Runner      | Tests |
-|-----------|-------------|-------|
-| Backend   | Jest        | 62 (auth 9, rbac 33, encryption 3, audit 5, consent 6, security 6) |
-| Frontend  | Jest + RTL  | 2     |
-| E2E       | Playwright  | Full auth/patient/doctor/admin flows |
+| Layer           | Runner              | Tests |
+|-----------------|---------------------|-------|
+| Backend         | Jest                | 62 (auth 9, rbac 33, encryption 3, audit 5, consent 6, security 6) |
+| Matching        | ts-node scenarios   | 37 hospital matching/merge scenarios |
+| Hospital Demo   | ts-node demo script | 36 live integration checks (idempotent) |
+| Security Probe  | ts-node probe       | 30 attack-vector checks |
+| Frontend        | Jest + RTL          | 2     |
+| E2E             | Playwright          | Full auth/patient/doctor/admin flows |
 
 ### Running Tests
 
 ```bash
-# Backend
-cd backend && npm test
+# Backend unit tests (against a test backend on :4100 with DISABLE_RATE_LIMIT=true)
+cd backend && API_BASE=http://localhost:4100/api/v1 npx jest
+
+# Live hospital integration demo (requires running stack)
+cd backend && ./scripts/run-demo.sh
+
+# Hospital patient-matching scenarios
+cd backend && API_BASE=http://localhost:4100/api/v1 \
+  CHDS_DB_URL="postgres://postgres:$DBPASS@$DBIP:5432/chds_db" \
+  npx ts-node --project tsconfig.test.json tests/scenarios/run-scenarios.ts
+
+# Security hardening probe
+cd backend && ./scripts/run-security-probe.sh
 
 # Frontend unit
 cd frontend && npm test
@@ -138,6 +166,8 @@ cd frontend && npm test
 # E2E (requires running backend + frontend)
 cd frontend && npm run test:e2e
 ```
+
+> **Note:** Backend tests hit a live server and can trip the rate limiter (429). Point `API_BASE` at a test instance started with `DISABLE_RATE_LIMIT=true NODE_ENV=test`, or run the stack with rate limiting disabled.
 
 ## CI/CD
 
@@ -168,15 +198,20 @@ Hospitals can push FHIR R4 bundles via a secure API key:
 3. **Activate** : admin activates the hospital account
 4. **Ingest** : hospital pushes FHIR bundles with API key auth
 5. **Patient matching**:
-   - Fast: NID → SHA-256 hash → `nid_hash` lookup (confidence 1.0)
+   - Fast: NID → SHA-256 hash → `nid_hash` lookup (confidence 1.0, timing-safe compare)
    - Fallback: name (40pts) + DOB (35pts) + gender (10pts) + fuzzy name (25pts)
    - Thresholds: ≥75 auto-link, 40-74 pending_review, <40 create_new
+   - **Valid NID is authoritative** : a valid NID not found on file creates a new patient even with matching demographics (no `NID_CONFLICT` hold). Same-NID index drift still routes to `pending_review`.
+   - Matching on demographics only (no NID) is **held for admin review** rather than silently merged
+   - Admins confirm/reject holds in the review queue; rejected matches leave no records behind
 
 ## UI Features
 
 - **Cursor switcher**: Ambulance SVG, canvas particle trail, or off : persisted in localStorage, accessible from login/register/2FA pages
 - **Clock popup**: Full-screen canvas clock animation following cursor : date ring + analog face + hands. Floating button on dashboard, admin/users, doctor/search pages
 - **Back buttons**: "Back to Users" on admin/hospitals page, "Back to Hospitals" on admin/hospitals/matches page
+- **Lottie error/hack pages**: animated 404, 2FA, access-denied, hacking-detected (CCTV), and session-expired pages
+- **Security response gate**: client-side interceptor routes 401/403/blocked-upload responses to the matching error page
 
 ## Data Flow
 
@@ -235,17 +270,21 @@ docker compose down
 
 ## Security
 
-- PHI encrypted with AES-256 via `pgp_sym_encrypt` before storage
+- PHI encrypted with AES-256 via `pgp_sym_encrypt`; per-patient HKDF-SHA256 keys
 - App database user has `REVOKE UPDATE/DELETE` on `audit_log`
 - JWT tokens with configurable expiry and refresh rotation
 - Rate limiting via Redis-backed `express-rate-limit`
-- Helmet security headers
+- Helmet security headers + HSTS/`nosniff`/frame/referrer/permissions policies
 - RBAC middleware on every protected route
 - Emergency access override is logged with reason
 - All consent changes are recorded in the audit trail
 - IP blocking after N failed logins (configurable `BREACH_THRESHOLD`)
 - Rapid-fire attack detection (5+ attempts in 60s)
 - Hospital API key authentication (SHA-256 hashed, shown once)
+- Timing-safe NID hash comparison (`crypto.timingSafeEqual`)
+- Non-root containers, read-only filesystems, auth-gated static uploads
+- Key rotation runbook : `scripts/re-encrypt-phi.ts` (rotates salt + ciphertext)
+- Legacy migration runbook : `scripts/migrate-legacy-rows.ts` (no-salt rows → per-patient keys)
 
 ## FHIR Compatibility
 

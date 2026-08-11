@@ -6,6 +6,7 @@ import ThemeProvider from '@/providers/ThemeProvider';
 import AuthProvider from '@/providers/AuthProvider';
 import CursorProvider from '@/providers/CursorProvider';
 import { CookieConsent, TermsModal } from '@/components/ui/ConsentBanner';
+import SecurityResponseGate from '@/components/ui/SecurityResponseGate';
 
 export const metadata: Metadata = {
   title: 'CHDS Nepal : Healthcare Data Sharing Platform',
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthProvider>
           <ThemeProvider>
             <CursorProvider>
+              <SecurityResponseGate />
               {children}
               <CookieConsent />
               <TermsModal />

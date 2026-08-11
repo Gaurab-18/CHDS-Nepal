@@ -126,6 +126,39 @@ export const sendEmail = async (to: string, subject: string, html: string) => {
   });
 };
 
+export const sendHospitalRecordsEmail = async (email: string, hospitalName: string, recordCount: number) => {
+  const frontendUrl = process.env.FRONTEND_URL || 'https://localhost';
+  const dashboardLink = `${frontendUrl}/dashboard`;
+  const transporter = createTransporter();
+  const recordWord = recordCount === 1 ? 'record' : 'records';
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || 'chds@chds.np',
+    to: email,
+    subject: `${hospitalName} shared new health records with you`,
+    html: baseHtml(`
+      <h2 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#f9fafb;">New health records available</h2>
+      <p style="margin:0 0 24px;font-size:15px;color:#9ca3af;line-height:1.6;">
+        <strong style="color:#f9fafb;">${escapeHtml(hospitalName)}</strong> has shared
+        <strong style="color:#10b981;">${recordCount} new ${recordWord}</strong> with your CHDS Nepal account.
+      </p>
+      <div style="background:#0d1117;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:24px;text-align:center;">
+        <p style="margin:0;font-size:14px;color:#9ca3af;">Sign in to review and manage your health records securely.</p>
+      </div>
+      <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+        <tr>
+          <td style="border-radius:10px;background-color:#10b981;padding:14px 28px;">
+            <a href="${escapeHtml(dashboardLink)}" style="color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;display:inline-block;">View Records</a>
+          </td>
+        </tr>
+      </table>
+      <hr style="border:none;border-top:1px solid #1f2937;margin:24px 0;">
+      <p style="margin:0;font-size:13px;color:#6b7280;">
+        Records are encrypted and only visible to you and clinicians you have authorized.
+      </p>
+    `),
+  });
+};
+
 export const sendInviteEmail = async (email: string, inviteToken: string, role: string, hospitalId?: string) => {
   const frontendUrl = process.env.FRONTEND_URL || 'https://localhost';
   let inviteLink = `${frontendUrl}/register?invite=${encodeURIComponent(inviteToken)}&role=${encodeURIComponent(role)}`;

@@ -12,6 +12,7 @@ export default function DoctorSearchPage() {
   const [patients, setPatients] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [consenting, setConsenting] = useState<string | null>(null);
+  const [consentFeedback, setConsentFeedback] = useState<Record<string, { type: 'success' | 'error'; message: string }>>({});
 
   useEffect(() => {
     if (!user) { router.push('/login'); return; }
@@ -35,15 +36,25 @@ export default function DoctorSearchPage() {
 
   const requestConsent = async (patientId: string) => {
     setConsenting(patientId);
+    setConsentFeedback((prev) => {
+      const next = { ...prev };
+      delete next[patientId];
+      return next;
+    });
     try {
       const res = await fetch(`/api/v1/doctor/consent-request/${patientId}`, {
         method: 'POST', credentials: 'include',
       });
       const data = await res.json();
       if (res.ok) {
+        setConsentFeedback((prev) => ({ ...prev, [patientId]: { type: 'success', message: 'Request sent!' } }));
         loadPatients(search);
+      } else {
+        setConsentFeedback((prev) => ({ ...prev, [patientId]: { type: 'error', message: data.error || 'Request failed' } }));
       }
-    } catch {}
+    } catch {
+      setConsentFeedback((prev) => ({ ...prev, [patientId]: { type: 'error', message: 'Could not reach server' } }));
+    }
     setConsenting(null);
   };
 
@@ -92,10 +103,17 @@ export default function DoctorSearchPage() {
                     <Link href={`/doctor/patient/${p.id}`}
                       className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-500">View Records</Link>
                   ) : (
-                    <button onClick={() => requestConsent(p.id)} disabled={consenting === p.id}
-                      className="px-3 py-1.5 rounded-lg bg-gray-700 text-gray-300 text-xs font-semibold hover:bg-gray-600 disabled:opacity-50">
-                      {consenting === p.id ? 'Sending...' : 'Request Consent'}
-                    </button>
+                    <>
+                      <button onClick={() => requestConsent(p.id)} disabled={consenting === p.id}
+                        className="px-3 py-1.5 rounded-lg bg-gray-700 text-gray-300 text-xs font-semibold hover:bg-gray-600 disabled:opacity-50">
+                        {consenting === p.id ? 'Sending...' : 'Request Consent'}
+                      </button>
+                      {consentFeedback[p.id] && (
+                        <span className={`text-xs font-medium ${consentFeedback[p.id].type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>
+                          {consentFeedback[p.id].message}
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

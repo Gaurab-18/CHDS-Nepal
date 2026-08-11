@@ -1,0 +1,45 @@
+{
+  "resourceType": "Bundle",
+  "type": "transaction",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "S2-HOSPA",
+        "identifier": [],
+        "name": [
+          {
+            "family": "Sharma",
+            "given": [
+              "Sita"
+            ]
+          }
+        ],
+        "birthDate": "1985-03-20",
+        "gender": "female",
+        "given": "Sita",
+        "family": "Sharma"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "X",
+              "display": "HbA1c"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/S2-HOSPA"
+        },
+        "valueString": "6.5",
+        "effectiveDateTime": "2026-08-09T05:08:52.846Z"
+      }
+    }
+  ]
+}

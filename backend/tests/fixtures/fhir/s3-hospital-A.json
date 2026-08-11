@@ -1,0 +1,53 @@
+{
+  "resourceType": "Bundle",
+  "type": "transaction",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "S3-A",
+        "identifier": [
+          {
+            "system": "http://chds.np/national-id",
+            "type": {
+              "text": "NID"
+            },
+            "value": "1000555566667777"
+          }
+        ],
+        "name": [
+          {
+            "family": "Khatri",
+            "given": [
+              "Raj"
+            ]
+          }
+        ],
+        "birthDate": "1975-07-21",
+        "gender": "male",
+        "given": "Raj",
+        "family": "Khatri"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "X",
+              "display": "Total Cholest"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/S3-A"
+        },
+        "valueString": "210",
+        "effectiveDateTime": "2026-08-09T05:08:52.847Z"
+      }
+    }
+  ]
+}

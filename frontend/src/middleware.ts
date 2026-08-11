@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/reset-password', '/login/2fa', '/login/backup-code', '/_next'];
+const PUBLIC_ROUTES = ['/login', '/register', '/forgot-password', '/reset-password', '/login/2fa', '/login/backup-code', '/blocked', '/session-expired', '/access-denied', '/hacking-detected', '/_next'];
 const ROLE_ROUTES: Record<string, string> = {
   patient: '/dashboard',
   doctor: '/doctor/search',

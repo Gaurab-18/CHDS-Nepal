@@ -1,6 +1,6 @@
 import { loginAs, apiGet, apiPost, clearCookies } from './helpers';
 
-const PASSWORD = '@CHDS2024!';
+const PASSWORD = '@CHDS2026!';
 
 interface RouteTest {
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE';

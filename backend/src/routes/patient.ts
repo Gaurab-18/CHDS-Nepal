@@ -7,12 +7,12 @@ import { query } from '../db';
 import { authenticate, authorize } from '../middleware/authorize';
 import { auditLog, insertAuditLog } from '../middleware/auditLogger';
 import { upload } from '../middleware/fileUpload';
-import { encryptField, decryptField } from '../crypto';
+import { decryptForPatient, makePatientDecryptor, makePatientEncryptor } from '../crypto';
 import logger from '../logger';
 
 const router = Router();
 
-async function decryptPatientRecord(row: any) {
+async function decryptPatientRecord(row: any, dc: (buf: Buffer) => Promise<string>): Promise<any> {
   return {
     id: row.id,
     patient_id: row.patient_id,
@@ -20,25 +20,25 @@ async function decryptPatientRecord(row: any) {
     doctor_id: row.doctor_id,
     source: row.source,
     category: row.category || 'general',
-    title: row.encrypted_title ? await decryptField(row.encrypted_title) : null,
-    description: row.encrypted_description ? await decryptField(row.encrypted_description) : null,
-    file_path: row.encrypted_file_path ? await decryptField(row.encrypted_file_path) : null,
-    file_hash: row.encrypted_file_hash ? await decryptField(row.encrypted_file_hash) : null,
+    title: row.encrypted_title ? await dc(row.encrypted_title) : null,
+    description: row.encrypted_description ? await dc(row.encrypted_description) : null,
+    file_path: row.encrypted_file_path ? await dc(row.encrypted_file_path) : null,
+    file_hash: row.encrypted_file_hash ? await dc(row.encrypted_file_hash) : null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
 }
 
-async function decryptPatientInfo(row: any) {
+async function decryptPatientInfo(row: any, dc: (buf: any) => Promise<string | null>) {
   return {
     id: row.id,
     user_id: row.user_id,
-    first_name: row.encrypted_first_name ? await decryptField(row.encrypted_first_name) : null,
-    last_name: row.encrypted_last_name ? await decryptField(row.encrypted_last_name) : null,
-    dob: row.encrypted_dob ? await decryptField(row.encrypted_dob) : null,
-    phone: row.encrypted_phone ? await decryptField(row.encrypted_phone) : null,
-    address: row.encrypted_address ? await decryptField(row.encrypted_address) : null,
-    national_id: row.encrypted_national_id ? await decryptField(row.encrypted_national_id) : null,
+    first_name: row.encrypted_first_name ? await dc(row.encrypted_first_name) : null,
+    last_name: row.encrypted_last_name ? await dc(row.encrypted_last_name) : null,
+    dob: row.encrypted_dob ? await dc(row.encrypted_dob) : null,
+    phone: row.encrypted_phone ? await dc(row.encrypted_phone) : null,
+    address: row.encrypted_address ? await dc(row.encrypted_address) : null,
+    national_id: row.encrypted_national_id ? await dc(row.encrypted_national_id) : null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -56,7 +56,8 @@ router.get('/profile', authenticate, authorize('patient'), async (req: Request, 
       return;
     }
 
-    const decrypted = await decryptPatientInfo(result.rows[0]);
+    const dc = await makePatientDecryptor(result.rows[0].id);
+    const decrypted = await decryptPatientInfo(result.rows[0], dc);
     res.status(200).json(decrypted);
   } catch (err) {
     logger.error({ err }, 'Fetch patient profile error');
@@ -82,21 +83,24 @@ router.put('/profile', authenticate, authorize('patient'), async (req: Request, 
     const values: any[] = [];
     let paramIdx = 1;
 
+    const ec = await makePatientEncryptor(patientResult.rows[0].id);
+    const dc = await makePatientDecryptor(patientResult.rows[0].id);
+
     if (first_name !== undefined) {
       updates.push(`encrypted_first_name = $${paramIdx++}`);
-      values.push(await encryptField(sanitizeInput(first_name).substring(0, 100)));
+      values.push(await ec(sanitizeInput(first_name).substring(0, 100)));
     }
     if (last_name !== undefined) {
       updates.push(`encrypted_last_name = $${paramIdx++}`);
-      values.push(await encryptField(sanitizeInput(last_name).substring(0, 100)));
+      values.push(await ec(sanitizeInput(last_name).substring(0, 100)));
     }
     if (phone !== undefined) {
       updates.push(`encrypted_phone = $${paramIdx++}`);
-      values.push(await encryptField(sanitizeInput(phone).substring(0, 20)));
+      values.push(await ec(sanitizeInput(phone).substring(0, 20)));
     }
     if (address !== undefined) {
       updates.push(`encrypted_address = $${paramIdx++}`);
-      values.push(await encryptField(sanitizeInput(address).substring(0, 500)));
+      values.push(await ec(sanitizeInput(address).substring(0, 500)));
     }
 
     if (updates.length === 0) {
@@ -111,7 +115,7 @@ router.put('/profile', authenticate, authorize('patient'), async (req: Request, 
     );
 
     const updated = await query('SELECT * FROM patients WHERE id = $1', [patientResult.rows[0].id]);
-    const decrypted = await decryptPatientInfo(updated.rows[0]);
+    const decrypted = await decryptPatientInfo(updated.rows[0], dc);
     res.status(200).json({ message: 'Profile updated', profile: decrypted });
   } catch (err) {
     logger.error({ err }, 'Update patient profile error');
@@ -132,6 +136,7 @@ router.get('/records', authenticate, authorize('patient'), async (req: Request, 
     }
 
     const patientId = patientResult.rows[0].id;
+    const dc = await makePatientDecryptor(patientId);
     const result = await query(
       'SELECT * FROM records WHERE patient_id = $1 ORDER BY created_at DESC',
       [patientId]
@@ -139,7 +144,7 @@ router.get('/records', authenticate, authorize('patient'), async (req: Request, 
 
     const decrypted = await Promise.all(result.rows.map(async (row: any) => {
       try {
-        return await decryptPatientRecord(row);
+        return await decryptPatientRecord(row, dc);
       } catch {
         return null;
       }
@@ -172,10 +177,11 @@ router.post('/records', authenticate, authorize('patient'), async (req: Request,
 
     const patientId = patientResult.rows[0].id;
 
-    const encTitle = await encryptField(title);
-    const encDescription = await encryptField(description);
-    const encFilePath = file_path ? await encryptField(file_path) : null;
-    const encFileHash = file_hash ? await encryptField(file_hash) : null;
+    const ec = await makePatientEncryptor(patientId);
+    const encTitle = await ec(title);
+    const encDescription = await ec(description);
+    const encFilePath = file_path ? await ec(file_path) : null;
+    const encFileHash = file_hash ? await ec(file_hash) : null;
 
     const result = await query(
       `INSERT INTO records (patient_id, source, encrypted_title, encrypted_description, encrypted_file_path, encrypted_file_hash)
@@ -248,10 +254,11 @@ router.post('/records/upload', authenticate, authorize('patient'), upload.single
         return;
       }
 
-      const encTitle = await encryptField(sanitizedTitle);
-      const encDescription = await encryptField(sanitizedDesc);
-      const encFilePath = await encryptField(req.file.path);
-      const encFileHash = await encryptField(fileHash);
+      const ec = await makePatientEncryptor(patientId);
+      const encTitle = await ec(sanitizedTitle);
+      const encDescription = await ec(sanitizedDesc);
+      const encFilePath = await ec(req.file.path);
+      const encFileHash = await ec(fileHash);
 
       const result = await query(
         `INSERT INTO records (patient_id, source, encrypted_title, encrypted_description, encrypted_file_path, encrypted_file_hash, file_size)
@@ -304,7 +311,7 @@ router.delete('/records/:id', authenticate, authorize('patient'), async (req: Re
 
     if (recordResult.rows[0].encrypted_file_path) {
       try {
-        const filePath = await decryptField(recordResult.rows[0].encrypted_file_path);
+        const filePath = await decryptForPatient(patientResult.rows[0].id, recordResult.rows[0].encrypted_file_path);
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       } catch {}
     }
@@ -339,7 +346,7 @@ router.get('/records/file/:recordId', authenticate, authorize('patient'), async 
       return;
     }
 
-    const decryptedPath = await decryptField(recordResult.rows[0].encrypted_file_path);
+    const decryptedPath = await decryptForPatient(patientResult.rows[0].id, recordResult.rows[0].encrypted_file_path);
 
     if (!fs.existsSync(decryptedPath)) {
       res.status(404).json({ error: 'File not found on storage' });
@@ -700,9 +707,10 @@ router.get('/consents/:id/records', authenticate, authorize('patient'), async (r
       [req.params.id, patientResult.rows[0].id]
     );
 
+    const dc = await makePatientDecryptor(patientResult.rows[0].id);
     const decrypted = await Promise.all(records.rows.map(async (row: any) => {
       try {
-        const rec = await decryptPatientRecord(row);
+        const rec = await decryptPatientRecord(row, dc);
         return { ...rec, visible: row.visible };
       } catch {
         return null;
