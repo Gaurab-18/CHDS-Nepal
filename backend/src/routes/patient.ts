@@ -445,8 +445,8 @@ router.get('/records/file/:recordId', authenticate, authorize('patient'), async 
 });
 
 function sanitizeInput(input: string): string {
-  const stripped = input
-    .replace(/<[^>]*>/g, '')
+  const stripped = String(input)
+    .replace(/[<>&"'`]/g, '')
     .replace(/[\0\b\f\n\r\t\v]/g, ' ')
     .replace(/[;&|`$]/g, '')
     .trim();
@@ -891,9 +891,11 @@ router.post('/wipe-request', authenticate, authorize('patient'), auditLog('WIPE_
 router.get('/audit-qr', authenticate, authorize('patient'), async (req: Request, res: Response) => {
   try {
     const { fromDate, toDate, action } = req.query;
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) throw new Error('JWT_SECRET environment variable is not set');
     const token = jwt.sign(
       { sub: req.user!.id, scope: 'audit_view', fromDate, toDate, action },
-      process.env.JWT_SECRET || 'your-super-secret-jwt-key-min-32-chars',
+      jwtSecret,
       { expiresIn: '24h', issuer: 'chds-nepal' }
     );
     const params = new URLSearchParams({ token });

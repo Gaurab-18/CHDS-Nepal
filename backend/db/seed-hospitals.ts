@@ -63,7 +63,7 @@ async function seed() {
   const createdHospitals: Array<{ hospital: any; apiKey: string }> = [];
   for (const h of HOSPITALS) {
     const result = await createHospital(h, adminToken);
-    console.log(`  Created: ${result.hospital.name} | Key: ${result.apiKey}`);
+    console.log(`  Created: ${result.hospital.name} | Key: [REDACTED]`);
 
     await axios.patch(
       `${BASE_URL}/admin/hospitals/${result.hospital.id}/status`,

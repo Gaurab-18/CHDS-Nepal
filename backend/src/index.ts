@@ -129,8 +129,9 @@ app.get('/api/v1/public/audit-log', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Token is required' });
       return;
     }
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-min-32-chars',
-      { issuer: 'chds-nepal' }) as any;
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) throw new Error('JWT_SECRET environment variable is not set');
+    const decoded = jwt.verify(token, jwtSecret, { issuer: 'chds-nepal' }) as any;
     if (decoded.scope !== 'audit_view') {
       res.status(403).json({ error: 'Invalid token scope' });
       return;
@@ -145,6 +146,15 @@ app.get('/api/v1/public/audit-log', async (req: Request, res: Response) => {
     const user = userResult.rows[0];
     const patientResult = await query('SELECT id FROM patients WHERE user_id = $1', [userId]);
     const patientId = patientResult.rows[0]?.id;
+
+    const escapeHtml = (s: string): string => {
+      return String(s)
+        .replace(/&/g, '&')
+        .replace(/</g, '<')
+        .replace(/>/g, '>')
+        .replace(/"/g, '"')
+        .replace(/'/g, '&' + '#' + '39' + ';');
+    };
 
     let sql = `SELECT a.timestamp, a.action, a.ip_address, a.override_reason,
                       u.username, u.email, u.role as actor_role
@@ -222,17 +232,17 @@ app.get('/api/v1/public/audit-log', async (req: Request, res: Response) => {
       <tr>
         <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px">
           <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${actionColors[e.action] || '#6b7280'};margin-right:6px"></span>
-          ${actionLabels[e.action] || e.action}
+          ${escapeHtml(actionLabels[e.action] || e.action)}
         </td>
-        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#6b7280">${e.actor_role || 'system'}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#6b7280">${e.ip_address || '-'}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#6b7280;white-space:nowrap">${new Date(e.timestamp).toLocaleString()}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#9ca3af">${e.override_reason ? e.override_reason : ''}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#6b7280">${escapeHtml(e.actor_role || 'system')}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#6b7280">${escapeHtml(e.ip_address || '-')}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;color:#6b7280;white-space:nowrap">${escapeHtml(new Date(e.timestamp).toLocaleString())}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#9ca3af">${escapeHtml(e.override_reason || '')}</td>
       </tr>
     `).join('');
 
     const groupSummary = Object.entries(groups).map(([cat, items]) =>
-      `<div style="margin-bottom:4px"><span style="font-weight:600;font-size:13px">${cat}</span><span style="float:right;color:#6b7280;font-size:13px">${items.length} entries</span></div>`
+      `<div style="margin-bottom:4px"><span style="font-weight:600;font-size:13px">${escapeHtml(cat)}</span><span style="float:right;color:#6b7280;font-size:13px">${items.length} entries</span></div>`
     ).join('');
 
     const html = `<!DOCTYPE html>
@@ -268,11 +278,11 @@ app.get('/api/v1/public/audit-log', async (req: Request, res: Response) => {
   <div class="receipt">
     <div class="header">
       <h1>CHDS Audit Receipt</h1>
-      <p>Secure audit log export &middot; ${user.username || user.email}</p>
-      <span class="badge">${entries.length} entries &middot; ${fromDate || 'Last 30 days'}${toDate ? ' to ' + toDate : ''}${actionFilter ? ' &middot; Filter: ' + actionFilter : ''}</span>
+      <p>Secure audit log export &middot; ${escapeHtml(user.username || user.email)}</p>
+      <span class="badge">${entries.length} entries &middot; ${escapeHtml(fromDate || 'Last 30 days')}${toDate ? ' to ' + escapeHtml(toDate) : ''}${actionFilter ? ' &middot; Filter: ' + escapeHtml(actionFilter) : ''}</span>
     </div>
     <div class="meta">
-      <strong>User:</strong> ${user.username || 'N/A'} (${user.email})<br>
+      <strong>User:</strong> ${escapeHtml(user.username || 'N/A')} (${escapeHtml(user.email)})<br>
       <strong>Generated:</strong> ${new Date().toLocaleString()} &middot; <strong>Expires:</strong> ${new Date(Date.now() + 86400000).toLocaleString()}
     </div>
     ${entries.length === 0 ? '<div class="no-entries">No audit entries found for the selected criteria.</div>' : `

@@ -1,12 +1,14 @@
 import { Router, Request, Response } from 'express';
 import pool, { query } from '../db';
 import { authenticate, authorize } from '../middleware/authorize';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes } from 'crypto';
+import bcrypt from 'bcrypt';
 import { insertHospitalAuditLog } from '../hospital/auditLog';
 import { encryptForPatient } from '../crypto';
 import { getGraceHours } from '../middleware/hospitalAuth';
 
 const router = Router();
+const BCRYPT_COST = 12;
 
 router.get('/', authenticate, authorize('admin'), async (_req: Request, res: Response) => {
   const { rows } = await query(
@@ -34,7 +36,7 @@ router.post('/', authenticate, authorize('admin'), async (req: Request, res: Res
   }
 
   const plainKey = randomBytes(32).toString('hex');
-  const keyHash  = createHash('sha256').update(plainKey).digest('hex');
+  const keyHash = await bcrypt.hash(plainKey, BCRYPT_COST);
 
   const { rows } = await query(
     `INSERT INTO hospitals
@@ -108,7 +110,7 @@ router.patch('/:id/status', authenticate, authorize('admin'), async (req: Reques
 
 router.post('/:id/regenerate-key', authenticate, authorize('admin'), async (req: Request, res: Response) => {
   const plainKey = randomBytes(32).toString('hex');
-  const keyHash  = createHash('sha256').update(plainKey).digest('hex');
+  const keyHash = await bcrypt.hash(plainKey, BCRYPT_COST);
 
   const { rows: current } = await query(
     'SELECT api_key_hash FROM hospitals WHERE id = $1',
@@ -157,7 +159,7 @@ router.post('/:id/regenerate-key', authenticate, authorize('admin'), async (req:
 // Alias: rotate-key is the canonical rotation endpoint (same semantics).
 router.post('/:id/rotate-key', authenticate, authorize('admin'), async (req: Request, res: Response) => {
   const plainKey = randomBytes(32).toString('hex');
-  const keyHash  = createHash('sha256').update(plainKey).digest('hex');
+  const keyHash = await bcrypt.hash(plainKey, BCRYPT_COST);
 
   const { rows: current } = await query(
     'SELECT api_key_hash FROM hospitals WHERE id = $1',

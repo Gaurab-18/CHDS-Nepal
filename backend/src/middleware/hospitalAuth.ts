@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { createHash } from 'crypto';
+import bcrypt from 'bcrypt';
 import { query } from '../db';
 
 export interface HospitalInfo {
@@ -24,16 +24,25 @@ export const getGraceHours = (): number => {
 // Shared lookup logic used by both middleware variants.
 // Accepts the current key, or the previous key while still within its grace window.
 async function lookupHospital(apiKey: string): Promise<HospitalInfo | null> {
-  const keyHash = createHash('sha256').update(apiKey).digest('hex');
   const { rows } = await query(
-    `SELECT id, name, status, terms_accepted_at, terms_version
+    `SELECT id, name, status, terms_accepted_at, terms_version, api_key_hash, api_key_previous_hash, api_key_previous_expires_at
      FROM hospitals
-     WHERE api_key_hash = $1
-        OR (api_key_previous_hash = $1 AND api_key_previous_expires_at > CURRENT_TIMESTAMP)
+     WHERE api_key_hash IS NOT NULL
+        OR api_key_previous_hash IS NOT NULL
      LIMIT 1`,
-    [keyHash]
   );
-  return rows.length > 0 ? rows[0] : null;
+
+  for (const row of rows) {
+    if (row.api_key_hash && await bcrypt.compare(apiKey, row.api_key_hash)) {
+      return row;
+    }
+    if (row.api_key_previous_hash && row.api_key_previous_expires_at && new Date(row.api_key_previous_expires_at) > new Date()) {
+      if (await bcrypt.compare(apiKey, row.api_key_previous_hash)) {
+        return row;
+      }
+    }
+  }
+  return null;
 }
 
 // Strict: requires active status (for ingest and data operations)

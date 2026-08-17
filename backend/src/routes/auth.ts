@@ -249,10 +249,18 @@ router.post('/register', async (req: Request, res: Response) => {
 
     const userRole = role === 'doctor' ? 'doctor' : 'patient';
 
-    const fullName = req.body.full_name ? String(req.body.full_name).replace(/<[^>]*>/g, '').replace(/[\0\b\f\n\r\t\v]/g, ' ').trim().substring(0, 100) : '';
+    const sanitize = (input: string, maxLen: number): string => {
+      return String(input)
+        .replace(/[<>&"'`]/g, '')
+        .replace(/[\0\b\f\n\r\t\v]/g, ' ')
+        .trim()
+        .substring(0, maxLen);
+    };
+
+    const fullName = req.body.full_name ? sanitize(req.body.full_name, 100) : '';
     const nationalId = req.body.national_id ? String(req.body.national_id).trim() : '';
     const dateOfBirth = req.body.date_of_birth ? String(req.body.date_of_birth).trim() : '';
-    const gender = req.body.gender ? String(req.body.gender).replace(/<[^>]*>/g, '').trim().substring(0, 20) : '';
+    const gender = req.body.gender ? sanitize(req.body.gender, 20) : '';
 
     if (nationalId) {
       const nidValidation = validateNid(nationalId);

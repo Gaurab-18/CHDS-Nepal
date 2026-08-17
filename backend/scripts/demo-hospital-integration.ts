@@ -48,15 +48,34 @@ function step(msg: string) {
 }
 function ok(name: string, detail?: any) {
   passCount++;
-  console.log(`   ${PASS} ${name}${detail !== undefined ? DIM + '  ' + JSON.stringify(detail) + RST : ''}`);
+  const safeDetail = detail ? sanitizeForLog(detail) : undefined;
+  console.log(`   ${PASS} ${name}${safeDetail !== undefined ? DIM + '  ' + JSON.stringify(safeDetail) + RST : ''}`);
 }
 function fail(name: string, detail?: any) {
   failCount++;
-  console.log(`   ${FAIL} ${name}${detail !== undefined ? DIM + '  ' + JSON.stringify(detail) + RST : ''}`);
+  const safeDetail = detail ? sanitizeForLog(detail) : undefined;
+  console.log(`   ${FAIL} ${name}${safeDetail !== undefined ? DIM + '  ' + JSON.stringify(safeDetail) + RST : ''}`);
 }
 function result(name: string, cond: boolean, detail?: any) {
   cond ? ok(name, detail) : fail(name, detail);
   return cond;
+}
+
+// Sanitize sensitive fields from log output
+function sanitizeForLog(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeForLog);
+  const sanitized: any = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const kl = k.toLowerCase();
+    if (kl.includes('key') || kl.includes('secret') || kl.includes('token') || kl.includes('password') || kl.includes('api')) {
+      sanitized[k] = '[REDACTED]';
+    } else {
+      sanitized[k] = sanitizeForLog(v);
+    }
+  }
+  return sanitized;
 }
 // Human-readable version of the matcher's verdict
 function verdict(action?: string): string {

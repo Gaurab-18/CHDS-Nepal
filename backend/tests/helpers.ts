@@ -1,4 +1,4 @@
-const API_BASE = process.env.API_BASE || 'http://localhost:4000/api/v1';
+const API_BASE = process.env.API_BASE || 'http://localhost:4100/api/v1';
 
 let cookieJar: string[] = [];
 
