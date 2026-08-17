@@ -18,6 +18,9 @@ import {
 import { verifyTOTPForUser, setupTOTP, enableTOTP } from '../auth/totp';
 import { insertAuditLog } from '../middleware/auditLogger';
 import { authenticate, JwtPayload } from '../middleware/authorize';
+import { generatePatientSalt, derivePatientKey, encryptPatientField } from '../crypto';
+import { validateNid, hashNid, matchPatient, FHIRPatientExtract } from '../hospital/patientMatcher';
+import { sendWelcomeEmail } from '../email';
 import redisClient from '../redisClient';
 import { sendPasswordResetEmail } from '../email';
 import { blockIP } from '../middleware/ipBlocker';
@@ -58,7 +61,7 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
     if (!email || !password) {
       res.status(400).json({ error: 'Email and password are required' });
       return;
@@ -112,7 +115,6 @@ router.post('/login', async (req: Request, res: Response) => {
       const rapidFireThreshold = parseInt(process.env.RAPID_FIRE_THRESHOLD || '5');
       if (count === 1) await redisClient.expire(redisKey, failedLoginTtl);
 
-      // Rapid-fire detection: 5+ attempts in 60 seconds → immediate block
       const clientIP = req.headers['x-forwarded-for']
         ? (typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'] : req.headers['x-forwarded-for'][0]).split(',')[0].trim()
         : req.ip || req.socket.remoteAddress || 'unknown';
@@ -142,6 +144,13 @@ router.post('/login', async (req: Request, res: Response) => {
         response.warning = `You have ${remainingAttempts} attempt${remainingAttempts !== 1 ? 's' : ''} remaining before your IP is temporarily blocked.`;
       }
       res.status(401).json(response);
+      return;
+    }
+
+    const expectedRole = role === 'doctor' ? 'doctor' : role === 'admin' ? 'admin' : 'patient';
+    if (user.role !== expectedRole) {
+      await insertAuditLog(user.id, 'LOGIN_ROLE_MISMATCH', null, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+      res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
@@ -240,6 +249,24 @@ router.post('/register', async (req: Request, res: Response) => {
 
     const userRole = role === 'doctor' ? 'doctor' : 'patient';
 
+    const fullName = req.body.full_name ? String(req.body.full_name).replace(/<[^>]*>/g, '').replace(/[\0\b\f\n\r\t\v]/g, ' ').trim().substring(0, 100) : '';
+    const nationalId = req.body.national_id ? String(req.body.national_id).trim() : '';
+    const dateOfBirth = req.body.date_of_birth ? String(req.body.date_of_birth).trim() : '';
+    const gender = req.body.gender ? String(req.body.gender).replace(/<[^>]*>/g, '').trim().substring(0, 20) : '';
+
+    if (nationalId) {
+      const nidValidation = validateNid(nationalId);
+      if (!nidValidation.valid) {
+        res.status(400).json({ error: nidValidation.error });
+        return;
+      }
+    }
+
+    if (dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+      res.status(400).json({ error: 'Date of birth must be in YYYY-MM-DD format' });
+      return;
+    }
+
     const existingUser = await query('SELECT id FROM users WHERE email = $1 OR username = $2', [email, username]);
     if (existingUser.rows.length) {
       res.status(409).json({ error: 'User with this email or username already exists' });
@@ -254,16 +281,73 @@ router.post('/register', async (req: Request, res: Response) => {
     const user = result.rows[0];
 
     if (userRole === 'doctor') {
-      const fullName = req.body.full_name || username;
+      const docFullName = req.body.full_name || username;
       const hospitalName = req.body.hospital_name || 'Not specified';
       await query(
         `INSERT INTO doctor_profiles (user_id, full_name, hospital_name) VALUES ($1, $2, $3)
          ON CONFLICT (user_id) DO UPDATE SET full_name = EXCLUDED.full_name, hospital_name = EXCLUDED.hospital_name`,
-        [user.id, fullName, hospitalName]
+        [user.id, docFullName, hospitalName]
       );
     }
 
+    if (userRole === 'patient') {
+      const hasIdentity = !!(fullName || nationalId || dateOfBirth);
+
+      if (!hasIdentity) {
+        const salt = generatePatientSalt();
+        const patientKey = derivePatientKey(salt).toString('base64');
+        const encFirstName = await encryptPatientField('', patientKey);
+        const encLastName = await encryptPatientField('', patientKey);
+        const encDob = await encryptPatientField('', patientKey);
+        await query(
+          `INSERT INTO patients (user_id, enc_key_salt, encrypted_first_name, encrypted_last_name, encrypted_dob)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [user.id, salt, encFirstName, encLastName, encDob]
+        );
+      } else {
+        const displayName = fullName || username;
+        const nameParts = displayName.trim().split(/\s+/);
+        const firstName = nameParts.slice(0, -1).join(' ') || displayName;
+        const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
+
+        const extract: FHIRPatientExtract = {
+          hospitalLocalId: `self-${user.id}`,
+          nid: nationalId || undefined,
+          fullName: displayName,
+          dateOfBirth,
+          gender
+        };
+        const match = await matchPatient(extract);
+
+        if (match.action === 'auto-link' && match.chdsPatientId) {
+          await query(
+            'UPDATE patients SET user_id = $1 WHERE id = $2',
+            [user.id, match.chdsPatientId]
+          );
+          await insertAuditLog(user.id, 'PATIENT_LINKED_SELF_REG', match.chdsPatientId, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+        } else {
+          const salt = generatePatientSalt();
+          const patientKey = derivePatientKey(salt).toString('base64');
+          const encFirstName = await encryptPatientField(firstName, patientKey);
+          const encLastName = await encryptPatientField(lastName, patientKey);
+          const encDob = await encryptPatientField(dateOfBirth, patientKey);
+          const encNid = nationalId ? await encryptPatientField(nationalId, patientKey) : null;
+          await query(
+            `INSERT INTO patients (user_id, enc_key_salt, encrypted_first_name, encrypted_last_name, encrypted_dob,
+                                   encrypted_national_id, full_name, date_of_birth, gender, nid_hash)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [user.id, salt, encFirstName, encLastName, encDob, encNid, displayName, dateOfBirth, gender, nationalId ? hashNid(nationalId) : null]
+          );
+        }
+      }
+    }
+
     await insertAuditLog(user.id, 'USER_REGISTERED', user.id, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+
+    if (userRole === 'patient') {
+      sendWelcomeEmail(email, username).catch((err) => logger.warn({ err }, 'Welcome email failed'));
+    }
+
     res.status(201).json({ message: 'User registered successfully', user: { id: user.id, username: user.username, email: user.email, role: user.role } });
   } catch (err) {
     logger.error({ err }, 'Registration error');

@@ -8,6 +8,7 @@ import { authenticate, authorize } from '../middleware/authorize';
 import { auditLog, insertAuditLog } from '../middleware/auditLogger';
 import { upload } from '../middleware/fileUpload';
 import { decryptForPatient, makePatientDecryptor, makePatientEncryptor } from '../crypto';
+import { validateNid, hashNid } from '../hospital/patientMatcher';
 import logger from '../logger';
 
 const router = Router();
@@ -30,15 +31,21 @@ async function decryptPatientRecord(row: any, dc: (buf: Buffer) => Promise<strin
 }
 
 async function decryptPatientInfo(row: any, dc: (buf: any) => Promise<string | null>) {
+  const safe = async (buf: any) => {
+    if (buf == null) return null;
+    try { return await dc(buf); }
+    catch { return null; }
+  };
   return {
     id: row.id,
     user_id: row.user_id,
-    first_name: row.encrypted_first_name ? await dc(row.encrypted_first_name) : null,
-    last_name: row.encrypted_last_name ? await dc(row.encrypted_last_name) : null,
-    dob: row.encrypted_dob ? await dc(row.encrypted_dob) : null,
-    phone: row.encrypted_phone ? await dc(row.encrypted_phone) : null,
-    address: row.encrypted_address ? await dc(row.encrypted_address) : null,
-    national_id: row.encrypted_national_id ? await dc(row.encrypted_national_id) : null,
+    first_name: await safe(row.encrypted_first_name),
+    last_name: await safe(row.encrypted_last_name),
+    dob: await safe(row.encrypted_dob),
+    phone: await safe(row.encrypted_phone),
+    address: await safe(row.encrypted_address),
+    national_id: await safe(row.encrypted_national_id),
+    gender: row.gender || null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -67,10 +74,10 @@ router.get('/profile', authenticate, authorize('patient'), async (req: Request, 
 
 router.put('/profile', authenticate, authorize('patient'), async (req: Request, res: Response) => {
   try {
-    const { first_name, last_name, phone, address } = req.body;
+    const { first_name, last_name, phone, address, national_id, dob, gender } = req.body;
 
     const patientResult = await query(
-      'SELECT id FROM patients WHERE user_id = $1',
+      'SELECT * FROM patients WHERE user_id = $1',
       [req.user!.id]
     );
 
@@ -79,12 +86,65 @@ router.put('/profile', authenticate, authorize('patient'), async (req: Request, 
       return;
     }
 
+    const currentPatientId = patientResult.rows[0].id;
+    const ec = await makePatientEncryptor(currentPatientId);
+    const dc = await makePatientDecryptor(currentPatientId);
+
     const updates: string[] = [];
     const values: any[] = [];
     let paramIdx = 1;
 
-    const ec = await makePatientEncryptor(patientResult.rows[0].id);
-    const dc = await makePatientDecryptor(patientResult.rows[0].id);
+    if (national_id !== undefined) {
+      const nidClean = sanitizeInput(national_id);
+      if (nidClean === '') {
+        updates.push(`encrypted_national_id = NULL`);
+        updates.push(`nid_hash = NULL`);
+      } else {
+        const nidValidation = validateNid(nidClean);
+        if (!nidValidation.valid) {
+          res.status(400).json({ error: nidValidation.error });
+          return;
+        }
+        const newHash = hashNid(nidClean);
+        const holder = await query(
+          'SELECT id FROM patients WHERE nid_hash = $1 AND id != $2 LIMIT 1',
+          [newHash, currentPatientId]
+        );
+        if (holder.rows.length > 0) {
+          const targetId = holder.rows[0].id;
+          const dep = await query(
+            `SELECT
+               (SELECT count(*) FROM records WHERE patient_id = $1) AS records,
+               (SELECT count(*) FROM consents WHERE patient_id = $1) AS consents,
+               (SELECT count(*) FROM hospital_patient_links WHERE chds_patient_id = $1) AS links,
+               (SELECT count(*) FROM data_wipe_requests WHERE patient_id = $1) AS wipes,
+               (SELECT count(*) FROM storage_requests WHERE patient_id = $1) AS storage`,
+            [currentPatientId]
+          );
+          const d = dep.rows[0];
+          const hasData = Number(d.records) + Number(d.consents) + Number(d.links) + Number(d.wipes) + Number(d.storage) > 0;
+          if (hasData) {
+            res.status(409).json({ error: 'This National ID is already linked to an account holding records. Contact support to merge.' });
+            return;
+          }
+          await query('DELETE FROM patients WHERE id = $1', [currentPatientId]);
+          await query(
+            'UPDATE patients SET user_id = $1 WHERE id = $2',
+            [req.user!.id, targetId]
+          );
+          const updated = await query('SELECT * FROM patients WHERE id = $1', [targetId]);
+          const targetDc = await makePatientDecryptor(targetId);
+          const decrypted = await decryptPatientInfo(updated.rows[0], targetDc);
+          await insertAuditLog(req.user!.id, 'PROFILE_LINKED', targetId, req.ip || 'unknown', req.get('User-Agent') || 'unknown');
+          res.status(200).json({ message: 'Profile linked to existing patient record', profile: decrypted });
+          return;
+        }
+        updates.push(`encrypted_national_id = $${paramIdx++}`);
+        values.push(await ec(nidClean));
+        updates.push(`nid_hash = $${paramIdx++}`);
+        values.push(newHash);
+      }
+    }
 
     if (first_name !== undefined) {
       updates.push(`encrypted_first_name = $${paramIdx++}`);
@@ -94,6 +154,15 @@ router.put('/profile', authenticate, authorize('patient'), async (req: Request, 
       updates.push(`encrypted_last_name = $${paramIdx++}`);
       values.push(await ec(sanitizeInput(last_name).substring(0, 100)));
     }
+    if (first_name !== undefined || last_name !== undefined) {
+      const cur = patientResult.rows[0];
+      const curFirst = cur.encrypted_first_name ? await dc(cur.encrypted_first_name) : '';
+      const curLast = cur.encrypted_last_name ? await dc(cur.encrypted_last_name) : '';
+      const newFirst = first_name !== undefined ? sanitizeInput(first_name) : curFirst;
+      const newLast = last_name !== undefined ? sanitizeInput(last_name) : curLast;
+      updates.push(`full_name = $${paramIdx++}`);
+      values.push(`${newFirst} ${newLast}`.trim().substring(0, 100));
+    }
     if (phone !== undefined) {
       updates.push(`encrypted_phone = $${paramIdx++}`);
       values.push(await ec(sanitizeInput(phone).substring(0, 20)));
@@ -102,19 +171,34 @@ router.put('/profile', authenticate, authorize('patient'), async (req: Request, 
       updates.push(`encrypted_address = $${paramIdx++}`);
       values.push(await ec(sanitizeInput(address).substring(0, 500)));
     }
+    if (dob !== undefined) {
+      const dobClean = sanitizeInput(dob);
+      if (dobClean !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(dobClean)) {
+        res.status(400).json({ error: 'Date of birth must be in YYYY-MM-DD format' });
+        return;
+      }
+      updates.push(`encrypted_dob = $${paramIdx++}`);
+      values.push(await ec(dobClean));
+      updates.push(`date_of_birth = $${paramIdx++}`);
+      values.push(dobClean || null);
+    }
+    if (gender !== undefined) {
+      updates.push(`gender = $${paramIdx++}`);
+      values.push(sanitizeInput(gender).substring(0, 20) || null);
+    }
 
     if (updates.length === 0) {
       res.status(400).json({ error: 'No fields to update' });
       return;
     }
 
-    values.push(patientResult.rows[0].id);
+    values.push(currentPatientId);
     await query(
       `UPDATE patients SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${paramIdx}`,
       values
     );
 
-    const updated = await query('SELECT * FROM patients WHERE id = $1', [patientResult.rows[0].id]);
+    const updated = await query('SELECT * FROM patients WHERE id = $1', [currentPatientId]);
     const decrypted = await decryptPatientInfo(updated.rows[0], dc);
     res.status(200).json({ message: 'Profile updated', profile: decrypted });
   } catch (err) {

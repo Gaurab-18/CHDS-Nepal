@@ -115,7 +115,7 @@ export default function DashboardPage() {
 function ProfileTab() {
   const [profile, setProfile] = useState<any>(null);
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ first_name: '', last_name: '', phone: '', address: '' });
+  const [form, setForm] = useState({ first_name: '', last_name: '', phone: '', address: '', national_id: '', dob: '', gender: '' });
   const [saveMsg, setSaveMsg] = useState('');
   const [profileError, setProfileError] = useState('');
 
@@ -125,7 +125,7 @@ function ProfileTab() {
         if (!r.ok) throw new Error('Failed to load');
         return r.json();
       })
-      .then((p) => { setProfile(p); setForm({ first_name: p.first_name || '', last_name: p.last_name || '', phone: p.phone || '', address: p.address || '' }); })
+      .then((p) => { setProfile(p); setForm({ first_name: p.first_name || '', last_name: p.last_name || '', phone: p.phone || '', address: p.address || '', national_id: p.national_id || '', dob: p.dob || '', gender: p.gender || '' }); })
       .catch(() => setProfileError('Could not load profile. Make sure you have a patient profile set up.'));
   }, []);
 
@@ -163,9 +163,26 @@ function ProfileTab() {
           <>
             <EditField label="First Name" value={form.first_name} maxLen={LIMIT} onChange={(v) => setForm({ ...form, first_name: v })} />
             <EditField label="Last Name" value={form.last_name} maxLen={LIMIT} onChange={(v) => setForm({ ...form, last_name: v })} />
-            <Field label="National ID" value={profile.national_id || 'Not set'} />
-            <Field label="Date of Birth" value={profile.dob} />
+            <EditField label="National ID (16 digits)" value={form.national_id} maxLen={16} onChange={(v) => setForm({ ...form, national_id: v.replace(/[^\d]/g, '').slice(0, 16) })} />
+            <div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Date of Birth</p>
+              <input type="date" value={form.dob} onChange={(e) => setForm({ ...form, dob: e.target.value })}
+                className="w-full px-3 py-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
             <EditField label="Phone" value={form.phone} maxLen={20} onChange={(v) => setForm({ ...form, phone: v })} />
+            <div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Gender</p>
+              <div className="flex gap-2">
+                {['male', 'female', 'other'].map((g) => (
+                  <button key={g} type="button" onClick={() => setForm({ ...form, gender: form.gender === g ? '' : g })}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-all capitalize ${
+                      form.gender === g
+                        ? 'bg-emerald-600 border-emerald-500 text-white'
+                        : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-300 hover:border-gray-400 dark:hover:border-gray-600'
+                    }`}>{g}</button>
+                ))}
+              </div>
+            </div>
             <EditField label="Address" className="col-span-2" value={form.address} maxLen={500} onChange={(v) => setForm({ ...form, address: v })} />
             <div className="col-span-2">
               <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500">
@@ -178,7 +195,8 @@ function ProfileTab() {
             <Field label="First Name" value={profile.first_name} />
             <Field label="Last Name" value={profile.last_name} />
             <Field label="National ID" value={profile.national_id || 'Not set'} />
-            <Field label="Date of Birth" value={profile.dob} />
+            <Field label="Date of Birth" value={profile.dob || 'Not set'} />
+            <Field label="Gender" value={profile.gender || 'Not set'} />
             <Field label="Phone" value={profile.phone} />
             <Field label="Address" className="col-span-2" value={profile.address} />
           </>

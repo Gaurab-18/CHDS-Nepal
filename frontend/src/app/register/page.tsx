@@ -18,6 +18,9 @@ export default function RegisterPage() {
   const [showPw, setShowPw] = useState(false);
   const [fullName, setFullName] = useState('');
   const [hospitalName, setHospitalName] = useState('');
+  const [nationalId, setNationalId] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const [gender, setGender] = useState('');
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -28,6 +31,11 @@ export default function RegisterPage() {
       if (role === 'doctor') {
         body.full_name = fullName;
         body.hospital_name = hospitalName;
+      } else {
+        if (fullName) body.full_name = fullName;
+        if (nationalId) body.national_id = nationalId;
+        if (dateOfBirth) body.date_of_birth = dateOfBirth;
+        if (gender) body.gender = gender;
       }
 
       const res = await fetch('/api/v1/auth/register', {
@@ -147,6 +155,44 @@ export default function RegisterPage() {
                 <input type="text" value={hospitalName} onChange={(e) => setHospitalName(e.target.value)} required
                   className="w-full px-4 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                   placeholder="Kathmandu Medical College" />
+              </div>
+            </>
+          )}
+
+          {role === 'patient' && (
+            <>
+              <div className="text-xs text-gray-500 px-1 -mb-1">
+                Optional : helps match your hospital health records to this account.
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Full Legal Name</label>
+                <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="As on your government ID" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">National ID (16 digits)</label>
+                <input type="text" value={nationalId} onChange={(e) => setNationalId(e.target.value.replace(/[^\d]/g, '').slice(0, 16))}
+                  className="w-full px-4 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="1234567890123456" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Date of Birth</label>
+                <input type="date" value={dateOfBirth} onChange={(e) => setDateOfBirth(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Gender</label>
+                <div className="flex gap-2">
+                  {['male', 'female', 'other'].map((g) => (
+                    <button key={g} type="button" onClick={() => setGender(g === gender ? '' : g)}
+                      className={`flex-1 py-2.5 rounded-lg text-sm font-semibold border transition-all capitalize ${
+                        gender === g
+                          ? 'bg-emerald-600 border-emerald-500 text-white'
+                          : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600'
+                      }`}>{g}</button>
+                  ))}
+                </div>
               </div>
             </>
           )}

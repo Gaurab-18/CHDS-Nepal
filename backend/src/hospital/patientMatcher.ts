@@ -44,7 +44,7 @@ export interface MatchResult {
   reason?: string;
 }
 
-function hashNid(nid: string): string {
+export function hashNid(nid: string): string {
   return createHash('sha256').update(nid.trim().toUpperCase()).digest('hex');
 }
 

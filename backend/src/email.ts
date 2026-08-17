@@ -116,6 +116,41 @@ export const sendTempPasswordEmail = async (email: string, tempPassword: string)
   });
 };
 
+export const sendWelcomeEmail = async (email: string, username: string) => {
+  const frontendUrl = process.env.FRONTEND_URL || 'https://localhost';
+  const dashboardLink = `${frontendUrl}/dashboard`;
+  const transporter = createTransporter();
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || 'chds@chds.np',
+    to: email,
+    subject: 'Welcome to CHDS Nepal : complete your profile within 7 days',
+    html: baseHtml(`
+      <h2 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#f9fafb;">Your account is ready</h2>
+      <p style="margin:0 0 20px;font-size:15px;color:#9ca3af;line-height:1.6;">
+        Welcome to CHDS Nepal, <strong style="color:#f9fafb;">${escapeHtml(username)}</strong>. Your account has been created successfully.
+      </p>
+      <div style="background:#0d1117;border:1px solid #1f2937;border-radius:10px;padding:18px 16px;margin-bottom:24px;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#f59e0b;">Please complete your profile within 7 days</p>
+        <p style="margin:0;font-size:14px;color:#9ca3af;line-height:1.6;">
+          Add your <strong style="color:#f9fafb;">legal documented government name</strong>, <strong style="color:#f9fafb;">date of birth</strong>, and <strong style="color:#f9fafb;">national ID</strong> (if you have one) so your hospital health records can be matched and linked to your account.
+        </p>
+      </div>
+      <p style="margin:0 0 24px;font-size:14px;color:#9ca3af;line-height:1.6;">
+        Your profile stays empty until you fill it in : sign in to your dashboard and open the <strong style="color:#f9fafb;">Profile</strong> tab to add your details.
+      </p>
+      <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+        <tr>
+          <td style="border-radius:10px;background-color:#10b981;padding:14px 28px;">
+            <a href="${escapeHtml(dashboardLink)}" style="color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;display:inline-block;">Go to My Profile</a>
+          </td>
+        </tr>
+      </table>
+      <hr style="border:none;border-top:1px solid #1f2937;margin:24px 0;">
+      <p style="margin:0;font-size:13px;color:#6b7280;">Your information is encrypted and only used to match health records shared by your hospital.</p>
+    `),
+  });
+};
+
 export const sendEmail = async (to: string, subject: string, html: string) => {
   const transporter = createTransporter();
   await transporter.sendMail({
